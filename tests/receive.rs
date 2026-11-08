@@ -80,13 +80,13 @@ impl World {
             .unwrap()
     }
 
-    async fn say(&self, to: &str, text: &str) {
-        self.post(
-            &format!("text/plain; to=\"{to}\""),
-            text.as_bytes(),
-            &self.luis,
-        )
-        .await;
+    /// Says `text` as luis, pinging `ping`, or everyone without it.
+    async fn say(&self, ping: Option<&str>, text: &str) {
+        let kind = match ping {
+            Some(ping) => format!("text/plain; ping=\"{ping}\""),
+            None => "text/plain".to_owned(),
+        };
+        self.post(&kind, text.as_bytes(), &self.luis).await;
     }
 
     async fn post(&self, kind: &str, body: &[u8], url: &str) {
@@ -155,7 +155,7 @@ fn receive(link: &str) -> CallToolRequestParams {
 }
 
 #[tokio::test]
-async fn receive_as_task_completes_only_for_a_message_to_the_agent() {
+async fn receive_as_task_completes_only_for_a_message_pinging_the_agent() {
     let world = world().await;
     let client = world
         .client(ClientCapabilities::builder().enable_tasks().build())
@@ -172,12 +172,12 @@ async fn receive_as_task_completes_only_for_a_message_to_the_agent() {
             .get_task(GetTaskParams::new(created.task.task_id.clone()))
     };
 
-    world.say("tristan", "Not for you.").await;
+    world.say(Some("tristan"), "Not for you.").await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!task().await.unwrap().task.status().is_terminal());
     assert_eq!(world.read_of("luis/claude").await, 0);
 
-    world.say("luis/claude", "For you.").await;
+    world.say(Some("luis/claude"), "For you.").await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     // The task is done, but its result is in nobody's context yet.
     assert_eq!(world.read_of("luis/claude").await, 0);
@@ -188,18 +188,12 @@ async fn receive_as_task_completes_only_for_a_message_to_the_agent() {
     };
     let result: CallToolResult = serde_json::from_value(result.into()).unwrap();
     let text = text(&result);
-    assert!(
-        text.contains("to tristan (context):\nNot for you."),
-        "{text}"
-    );
-    assert!(
-        text.contains("to luis/claude (for you):\nFor you."),
-        "{text}"
-    );
+    assert!(text.contains("from luis (fyi):\nNot for you."), "{text}");
+    assert!(text.contains("from luis (ping):\nFor you."), "{text}");
 }
 
 #[tokio::test]
-async fn receive_blocks_without_tasks_until_a_message_is_for_the_agent() {
+async fn receive_blocks_without_tasks_until_a_message_pings_the_agent() {
     let world = world().await;
     let client = world.client(ClientCapabilities::default()).await;
     let link = join(&client, &world.session).await;
@@ -209,31 +203,27 @@ async fn receive_blocks_without_tasks_until_a_message_is_for_the_agent() {
         let link = link.clone();
         async move { peer.call_tool(receive(&link)).await }
     });
-    world.say("tristan", "Not for you.").await;
+    world.say(Some("tristan"), "Not for you.").await;
+    world.say(Some(""), "For no one.").await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!receiving.is_finished());
     assert_eq!(world.read_of("luis/claude").await, 0);
 
-    world.say("*", "For everyone.").await;
+    world.say(None, "For everyone.").await;
     let result = tokio::time::timeout(Duration::from_secs(10), receiving)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(world.read_of("luis/claude").await, 4);
+    assert_eq!(world.read_of("luis/claude").await, 5);
     let text = text(&result);
-    assert!(
-        text.contains("to tristan (context):\nNot for you."),
-        "{text}"
-    );
-    assert!(text.contains("to * (for you):\nFor everyone."), "{text}");
+    assert!(text.contains("from luis (fyi):\nNot for you."), "{text}");
+    assert!(text.contains("from luis (fyi):\nFor no one."), "{text}");
+    assert!(text.contains("from luis (ping):\nFor everyone."), "{text}");
 
-    world.say("luis/claude", "Again.").await;
+    world.say(Some("tristan *"), "Again.").await;
     let text = self::text(&client.call_tool(receive(&link)).await.unwrap());
-    assert!(
-        text.starts_with("#5 from luis to luis/claude (for you):\nAgain."),
-        "{text}"
-    );
+    assert!(text.starts_with("#6 from luis (ping):\nAgain."), "{text}");
 }
 
 #[tokio::test]
@@ -245,7 +235,7 @@ async fn images_and_files_go_both_ways() {
     let image = b"\x89PNG not really";
     let url = format!("{}?filename=plot.png", world.luis);
     world
-        .post("image/png; to=\"luis/claude\"", image, &url)
+        .post("image/png; ping=\"luis/claude\"", image, &url)
         .await;
     let result = client.call_tool(receive(&link)).await.unwrap();
     let shown = result
@@ -260,7 +250,7 @@ async fn images_and_files_go_both_ways() {
     let sent = client
         .call_tool(CallToolRequestParams::new("send").with_arguments(object!({
             "link": link,
-            "to": ["luis"],
+            "ping": ["luis"],
             "file": { "data": BASE64.encode(file), "type": "application/octet-stream", "name": "data.bin" },
         })))
         .await
@@ -274,6 +264,6 @@ async fn images_and_files_go_both_ways() {
         .await
         .unwrap();
     let kind = got.headers()["content-type"].to_str().unwrap().to_owned();
-    assert_eq!(kind, "application/octet-stream; to=\"luis\"");
+    assert_eq!(kind, "application/octet-stream; ping=\"luis\"");
     assert_eq!(got.bytes().await.unwrap().as_ref(), file);
 }

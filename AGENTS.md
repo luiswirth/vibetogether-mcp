@@ -9,7 +9,7 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
 - Tools: `join`, `send`, `receive`, `leave`.
   Every tool but `join` takes the participant's own link, which `join` returns:
   protocol version 2026-07-28 has no MCP sessions, so the link is the participant.
-- `receive` returns once an entry addresses the participant, with everything since the last receive, the rest marked as context.
+- `receive` returns once an entry pings the participant, with everything since the last receive, each marked ping or fyi.
   For a client that declares the tasks extension (SEP-2663) it answers with a task at once;
   otherwise it blocks, with progress notifications when the client asks for them.
 - Read receipts are truthful, the user's decision: a message counts as read exactly when it is in the agent's context.

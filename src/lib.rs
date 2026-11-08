@@ -33,9 +33,12 @@ use serde_json::Value;
 const INSTRUCTIONS: &str = "\
 You can take part in a Vibe Together room: people and agents talking in one session.
 Join with the session's token or link and your name, such as luis/claude for luis's agent.
-Each message names whom it is for: names, or * for everyone. Everyone in the room reads every message.
-Whenever you are done with your own work, call receive: it returns once a message is for you, \
-with what was said in between, so that you wake on the next message for you.
+Everyone in the room gets every message, and a message pings, that is wakes, only whom it names. \
+A message to the room pings everyone: when it doesn't concern all, ping only whom it concerns, \
+and for an update nobody needs to act on, ping no one. A message that doesn't ping you is an fyi: \
+read it, and don't answer it.
+Whenever you are done with your own work, call receive: it returns once a message pings you, \
+with what was said in between.
 People read only the room: what you write outside it reaches no one there.";
 
 /// How long one receive from the relay waits, so that a lost connection is noticed.
@@ -106,8 +109,9 @@ struct JoinArgs {
 struct SendArgs {
     /// Your own link, which join returned.
     link: String,
-    /// Whom the message is for: names, or `*` for everyone.
-    to: Vec<String>,
+    /// Whom the message pings, that is wakes: names, or `*` for everyone.
+    /// Left out, it pings everyone; empty, it pings no one. Everyone gets it either way.
+    ping: Option<Vec<String>>,
     /// The message, in markdown. Give either this or a file.
     text: Option<String>,
     /// An image or any other file, at most 10 MB. Give either this or a text.
@@ -152,14 +156,14 @@ impl Room {
     }
 
     #[tool(
-        description = "Say something in the session, or share an image or a file, to the names you choose or `*` for everyone."
+        description = "Say something in the session, or share an image or a file. Everyone gets it; it pings everyone, or only whom `ping` names."
     )]
     async fn send(&self, Parameters(args): Parameters<SendArgs>) -> CallToolResult {
         outcome(self.say(args).await)
     }
 
     #[tool(
-        description = "Wait until a message is for you, then return it with everything said since your last receive. Call it whenever you are done with your own work."
+        description = "Wait until a message pings you, then return it with everything said since your last receive, each marked ping or fyi. Call it whenever you are done with your own work."
     )]
     async fn receive(&self, Parameters(args): Parameters<LinkArgs>) -> CallToolResult {
         self.receive_handing_over(&args.link).await
@@ -213,22 +217,23 @@ impl Room {
     }
 
     async fn say(&self, args: SendArgs) -> Result<String, String> {
-        let to = &args.to;
-        if to.is_empty()
-            || to
-                .iter()
-                .any(|name| name.is_empty() || name.contains([' ', '"']))
-        {
-            return Err(
-                "to needs at least one name, or *, each without spaces or quotes".to_owned(),
-            );
-        }
-        let to = format!("to=\"{}\"", to.join(" "));
+        let ping = match &args.ping {
+            None => String::new(),
+            Some(names) => {
+                if names
+                    .iter()
+                    .any(|name| name.is_empty() || name.contains([' ', '"']))
+                {
+                    return Err("ping takes names, or *, each without spaces or quotes".to_owned());
+                }
+                format!("; ping=\"{}\"", names.join(" "))
+            }
+        };
         let request = match (args.text, args.file) {
             (Some(text), None) => self
                 .http
                 .post(&args.link)
-                .header("content-type", format!("text/markdown; {to}"))
+                .header("content-type", format!("text/markdown{ping}"))
                 .body(text),
             (None, Some(file)) => {
                 let data = BASE64
@@ -237,7 +242,7 @@ impl Room {
                 let mut request = self
                     .http
                     .post(&args.link)
-                    .header("content-type", format!("{}; {to}", file.kind))
+                    .header("content-type", format!("{}{ping}", file.kind))
                     .body(data);
                 if let Some(name) = file.name {
                     request = request.query(&[("filename", name)]);
@@ -256,7 +261,7 @@ impl Room {
         Ok("Left the session.".to_owned())
     }
 
-    /// Takes entries from the relay until one is for this participant, then returns all of
+    /// Takes entries from the relay until one pings this participant, then returns all of
     /// them, without acknowledging them.
     async fn receive_for(&self, link: &str) -> Result<(Vec<ContentBlock>, Handover), String> {
         let name = match self.participant(link, |p| p.name.clone()) {
@@ -274,7 +279,7 @@ impl Room {
             let ready = self.participant(link, |p| {
                 p.pending
                     .iter()
-                    .any(|entry| addresses(entry, &name))
+                    .any(|entry| pings(entry, &name))
                     .then(|| (std::mem::take(&mut p.pending), p.presence.clone()))
             });
             if let Some((entries, presence)) = ready {
@@ -370,7 +375,7 @@ impl Room {
                 _ = context.ct.cancelled() => return outcome(Err("cancelled".to_owned())),
                 _ = ticks.tick() => if let Some(token) = &token {
                     progress += 1.0;
-                    let message = "Waiting for a message for you.";
+                    let message = "Waiting for a message that pings you.";
                     let param = ProgressNotificationParam::new(token.clone(), progress).with_message(message);
                     let _ = context.peer.notify_progress(param).await;
                 },
@@ -391,13 +396,8 @@ impl Room {
         for entry in entries {
             let (n, from) = (entry.n, &entry.from);
             let essence = entry.kind.split(';').next().unwrap_or_default().trim();
-            let to = recipients(entry).unwrap_or("*");
-            let marker = if addresses(entry, name) {
-                "for you"
-            } else {
-                "context"
-            };
-            let heading = format!("#{n} from {from} to {to} ({marker})");
+            let marker = if pings(entry, name) { "ping" } else { "fyi" };
+            let heading = format!("#{n} from {from} ({marker})");
             let file = format!(
                 "{essence}{}, {} bytes",
                 entry
@@ -523,7 +523,7 @@ impl ServerHandler for Room {
                     }
                     Ok(Err(error)) => outcome(Err(error)),
                     Err(_) => outcome(Ok(
-                        "Nothing for you in a day. Call receive again to keep listening."
+                        "Nothing pinged you in a day. Call receive again to keep listening."
                             .to_owned(),
                     )),
                 })
@@ -580,23 +580,24 @@ pub fn service(
     )
 }
 
-/// Speech's addressing: a `to` parameter of the type names the recipients, or `*` for everyone.
-/// A message without one is for everyone, but no entry of a vendor type, such as a join.
-fn addresses(entry: &Entry, name: &str) -> bool {
+/// Speech's pings: a `ping` parameter of the type names whom a message wakes, or `*` for
+/// everyone, and empty, no one. A message without one pings everyone,
+/// but no entry of a vendor type, such as a join.
+fn pings(entry: &Entry, name: &str) -> bool {
     let essence = entry.kind.split(';').next().unwrap_or_default().trim();
-    match recipients(entry) {
-        Some(to) => to
-            .split(' ')
-            .any(|recipient| recipient == "*" || recipient == name),
+    match ping(entry) {
+        Some(names) => names
+            .split_whitespace()
+            .any(|pinged| pinged == "*" || pinged == name),
         None => !essence.starts_with("application/vnd."),
     }
 }
 
-fn recipients(entry: &Entry) -> Option<&str> {
+fn ping(entry: &Entry) -> Option<&str> {
     entry.kind.split(';').skip(1).find_map(|parameter| {
         let (key, value) = parameter.split_once('=')?;
         key.trim()
-            .eq_ignore_ascii_case("to")
+            .eq_ignore_ascii_case("ping")
             .then(|| value.trim().trim_matches('"'))
     })
 }
