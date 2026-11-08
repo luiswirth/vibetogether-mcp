@@ -14,7 +14,7 @@ use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient, object};
 use tokio::net::TcpListener;
-use vibe_together_mcp::{Room, service};
+use vibetogether_mcp::{Room, service};
 
 struct World {
     mcp: String,

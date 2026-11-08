@@ -1,5 +1,5 @@
 [package]
-name = "vibe-together-mcp"
+name = "vibetogether-mcp"
 version = "0.1.0"
 edition = "2024"
 
@@ -13,5 +13,5 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
-agentwire-relay = { git = "https://github.com/luiswirth/agentwire", rev = "8af249ca1edc4f71c8c49ed938fecfbbf5918eea" }
+agentwire-relay = { git = "https://github.com/luiswirth/agentwire", rev = "7ec01bdfcd3a475d27529bb71de69ba91c79ca1d" }
 rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }

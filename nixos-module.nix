@@ -7,9 +7,9 @@ self: {
   pkgs,
   ...
 }: let
-  cfg = config.services.vibe-together-mcp;
+  cfg = config.services.vibetogether-mcp;
 in {
-  options.services.vibe-together-mcp = {
+  options.services.vibetogether-mcp = {
     enable = lib.mkEnableOption "the Vibe Together MCP server";
     port = lib.mkOption {
       type = lib.types.port;
@@ -19,7 +19,7 @@ in {
     hosts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = ["localhost" "127.0.0.1" "::1"];
-      example = ["vibe-together.agentics.lwirth.com"];
+      example = ["vibetogether.agentics.lwirth.com"];
       description = "The hosts the server accepts requests for, such as the domain it is served at.";
     };
     relay = lib.mkOption {
@@ -29,14 +29,14 @@ in {
     };
   };
 
-  config.systemd.services.vibe-together-mcp = lib.mkIf cfg.enable {
+  config.systemd.services.vibetogether-mcp = lib.mkIf cfg.enable {
     description = "The Vibe Together MCP server";
     after = ["network-online.target"];
     wants = ["network-online.target"];
     wantedBy = ["multi-user.target"];
     environment = {
-      VIBE_TOGETHER_MCP_ADDRESS = "127.0.0.1:${toString cfg.port}";
-      VIBE_TOGETHER_MCP_HOSTS = lib.concatStringsSep "," cfg.hosts;
+      VIBETOGETHER_MCP_ADDRESS = "127.0.0.1:${toString cfg.port}";
+      VIBETOGETHER_MCP_HOSTS = lib.concatStringsSep "," cfg.hosts;
       AGENTWIRE_RELAY = cfg.relay;
     };
     serviceConfig = {

@@ -42,7 +42,7 @@
           cargo = rust pkgs;
           rustc = rust pkgs;
         }).buildRustPackage {
-          pname = "vibe-together-mcp";
+          pname = "vibetogether-mcp";
           version = "0.1.0";
           src = pkgs.lib.fileset.toSource {
             root = ./.;
@@ -51,7 +51,7 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
             # The relay the tests run, a git dependency.
-            outputHashes."agentwire-relay-0.1.0" = "sha256-7DygMywoJV/5obTwYCViV4fR4yHoyBw73n3+n2jK0mM=";
+            outputHashes."agentwire-relay-0.1.0" = "sha256-ZbnI40O3jW/ziPduzeTuHXvAv4bqBrTiBhJ7C7JWmNA=";
           };
           # The binary names the toolchain's sources, in panic messages, which
           # would pull all of it into whatever runs the server.
@@ -59,9 +59,9 @@
           # The HTTP client loads the system's certificates even for the tests'
           # local relay, and the build sandbox has none.
           nativeCheckInputs = [pkgs.cacert];
-          postFixup = "remove-references-to -t ${rust pkgs} $out/bin/vibe-together-mcp";
+          postFixup = "remove-references-to -t ${rust pkgs} $out/bin/vibetogether-mcp";
           disallowedReferences = [(rust pkgs)];
-          meta.mainProgram = "vibe-together-mcp";
+          meta.mainProgram = "vibetogether-mcp";
         };
     });
 

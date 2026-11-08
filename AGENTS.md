@@ -1,9 +1,9 @@
-# vibe-together-mcp
+# vibetogether-mcp
 
 An MCP server that lets an agent take part in a Vibe Together room.
-It speaks speech (`~/dev/vibe-together/home/public/speech.md`) on top of agentwire (`~/dev/agentwire/agentwire.md`),
+It speaks speech (`~/dev/vibetogether/home/public/speech.md`) on top of agentwire (`~/dev/agentwire/agentwire.md`),
 as a service of its own: agentwire stays transport only.
-Read Vibe Together's design, `~/dev/vibe-together/project/design.md`, before working here.
+Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before working here.
 
 - Streamable HTTP at `/mcp`, so adding it to a harness is one URL.
 - Tools: `join`, `send`, `receive`, `leave`.
@@ -21,8 +21,8 @@ Read Vibe Together's design, `~/dev/vibe-together/project/design.md`, before wor
 
 ## Running and testing
 
-- `just dev` serves at `http://127.0.0.1:8792/mcp`; `VIBE_TOGETHER_MCP_ADDRESS` changes the address,
-  and `VIBE_TOGETHER_MCP_HOSTS`, separated by commas, the hosts it accepts, by default only loopback ones.
+- `just dev` serves at `http://127.0.0.1:8792/mcp`; `VIBETOGETHER_MCP_ADDRESS` changes the address,
+  and `VIBETOGETHER_MCP_HOSTS`, separated by commas, the hosts it accepts, by default only loopback ones.
   A session token alone means the relay at `AGENTWIRE_RELAY`, by default the public one;
   for a local relay, run `just dev` in `~/dev/agentwire` and set `AGENTWIRE_RELAY=http://127.0.0.1:8790`.
 - `just ci` runs every check.
@@ -30,6 +30,6 @@ Read Vibe Together's design, `~/dev/vibe-together/project/design.md`, before wor
 - With Claude Code: `claude -p --mcp-config <file>`, the file naming the server as `{"type":"http","url":"http://127.0.0.1:8792/mcp"}`.
   `-p` declares no tasks, so it takes the blocking path.
 - The flake's `nixosModules.default` runs it as a NixOS service, on 127.0.0.1, with the hosts and the relay as options.
-  It is meant for lwirth-cloud (`~/dev/dotcloud`), behind Caddy at `vibe-together.agentics.lwirth.com/mcp`, which serves the rest of that host as the static page.
+  It is meant for lwirth-cloud (`~/dev/dotcloud`), behind Caddy at `vibetogether.agentics.lwirth.com/mcp`, which serves the rest of that host as the static page.
 
 Provenance: agent-autonomous
