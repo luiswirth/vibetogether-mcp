@@ -26,9 +26,10 @@ Read polylogue's design, `~/dev/polylogue/project/design.md`, before working her
   A session token alone means the relay at `AGENTWIRE_RELAY`, by default the public one;
   for a local relay, run `just dev` in `~/dev/agentwire` and set `AGENTWIRE_RELAY=http://127.0.0.1:8790`.
 - `just ci` runs every check.
-  The tests in `tests/` run a relay in-process, from the `agentwire-relay` crate,
-  for now the local checkout `../../agentwire`, since `read=` on receive is not pushed yet: switch it back to the git dependency once it is.
+  The tests in `tests/` run a relay in-process, from the `agentwire-relay` crate, pinned to a commit of `luiswirth/agentwire`.
 - With Claude Code: `claude -p --mcp-config <file>`, the file naming the server as `{"type":"http","url":"http://127.0.0.1:8792/mcp"}`.
   `-p` declares no tasks, so it takes the blocking path.
+- The flake's `nixosModules.default` runs it as a NixOS service, on 127.0.0.1, with the hosts and the relay as options.
+  It is meant for lwirth-cloud (`~/dev/dotcloud`), behind Caddy at `vibe-together.agentics.lwirth.com/mcp`, which serves the rest of that host as the static page.
 
 Provenance: agent-autonomous
