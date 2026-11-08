@@ -3,12 +3,15 @@
 //! the relay at `AGENTWIRE_RELAY`, by default the public one.
 //! It accepts requests for the hosts in `VIBETOGETHER_MCP_HOSTS`, separated by commas,
 //! by default only loopback ones; behind a public domain, name it there.
+//! With `VIBETOGETHER_MCP_ACCOUNTS`, the account service's URL, joining a room signs
+//! in to that service, and the server names itself in its challenge by its public URL,
+//! `VIBETOGETHER_MCP_RESOURCE`.
 
 use std::env;
 use std::error::Error;
 
 use tokio::net::TcpListener;
-use vibetogether_mcp::{Room, service};
+use vibetogether_mcp::{Accounts, Room, router};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -22,7 +25,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .split(',')
         .map(str::trim)
         .filter(|host| !host.is_empty());
-    let router = axum::Router::new().nest_service("/mcp", service(Room::new(relay), hosts));
+    let accounts = match env::var("VIBETOGETHER_MCP_ACCOUNTS") {
+        Ok(service) => {
+            let resource = env::var("VIBETOGETHER_MCP_RESOURCE")
+                .map_err(|_| "VIBETOGETHER_MCP_ACCOUNTS needs VIBETOGETHER_MCP_RESOURCE")?;
+            Some(Accounts::new(&service, &resource)?)
+        }
+        Err(_) => None,
+    };
+    let router = router(Room::new(relay), hosts, accounts);
     let listener = TcpListener::bind(&address).await?;
     axum::serve(listener, router)
         .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.unwrap_or_default() })

@@ -52,8 +52,8 @@
             lockFile = ./Cargo.lock;
             # The participant library, and the relay the tests run: git
             # dependencies on one commit of agentwire.
-            outputHashes."agentwire-0.1.0" = "sha256-fx/onuBwC36DXenRhHqF1oc4kR2IkZBJAzJEPykGIoU=";
-            outputHashes."agentwire-relay-0.1.0" = "sha256-fx/onuBwC36DXenRhHqF1oc4kR2IkZBJAzJEPykGIoU=";
+            outputHashes."agentwire-0.1.0" = "sha256-3RmtGgxQKho0x22lq5bH2LJ3xzhJ0JVLK1/6PdOOwAw=";
+            outputHashes."agentwire-relay-0.1.0" = "sha256-3RmtGgxQKho0x22lq5bH2LJ3xzhJ0JVLK1/6PdOOwAw=";
           };
           # The binary names the toolchain's sources, in panic messages, which
           # would pull all of it into whatever runs the server.

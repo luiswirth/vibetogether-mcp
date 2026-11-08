@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "agentwire"
 version = "0.1.0"
-source = "git+https://github.com/luiswirth/agentwire?rev=af5f960dfd65ff849bae9c189dd5f471ee8dc768#af5f960dfd65ff849bae9c189dd5f471ee8dc768"
+source = "git+https://github.com/luiswirth/agentwire?rev=fbdfd7bb61308e74f7c60cd280d9585683e64816#fbdfd7bb61308e74f7c60cd280d9585683e64816"
 dependencies = [
  "reqwest",
  "serde",
@@ -15,7 +15,7 @@ dependencies = [
 [[package]]
 name = "agentwire-relay"
 version = "0.1.0"
-source = "git+https://github.com/luiswirth/agentwire?rev=af5f960dfd65ff849bae9c189dd5f471ee8dc768#af5f960dfd65ff849bae9c189dd5f471ee8dc768"
+source = "git+https://github.com/luiswirth/agentwire?rev=fbdfd7bb61308e74f7c60cd280d9585683e64816#fbdfd7bb61308e74f7c60cd280d9585683e64816"
 dependencies = [
  "agentwire",
  "axum",
@@ -23,6 +23,7 @@ dependencies = [
  "form_urlencoded",
  "getrandom 0.4.3",
  "http-body-util",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

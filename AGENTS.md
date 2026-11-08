@@ -18,6 +18,12 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
 - Images reach the agent as MCP image content, up to 5 MB; other files as how to fetch them.
   `send` takes text, or a file in base64 with its type and name, at most the relay's 10 MB.
 - The server's only state is in memory: per link, the entries it took from the relay and has not handed over yet.
+- Signing in is lazy, with an account service (`~/dev/vibetogether/accounts/api.md`, "The MCP server"), ag2's decision for luis's zero setup:
+  everything works without an account but a `join` into a room, which gets MCP's 401 challenge, naming the server's metadata, which the account service serves;
+  the challenge is the HTTP answer, before the MCP SDK runs, since a tool error starts no sign-in (Anthropic's "lazy authentication").
+  A token the service rejects through `GET /api/me` is challenged too.
+  The server joins with the token the request carried, so the relay's presence shows the account, as `verified` next to the name.
+  `tests/accounts.rs` keeps joining by secret link without an account working.
 
 ## Running and testing
 
@@ -25,12 +31,14 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
   and `VIBETOGETHER_MCP_HOSTS`, separated by commas, the hosts it accepts, by default only loopback ones.
   A session token alone means the relay at `AGENTWIRE_RELAY`, by default the public one;
   for a local relay, run `just dev` in `~/dev/agentwire` and set `AGENTWIRE_RELAY=http://127.0.0.1:8790`.
+  `VIBETOGETHER_MCP_ACCOUNTS`, the account service's URL, turns signing in on, with `VIBETOGETHER_MCP_RESOURCE`, the server's public URL, for the challenge;
+  the rooms are then the sessions on `AGENTWIRE_RELAY` that the service says last.
 - It speaks agentwire through the `agentwire` crate, agentwire's Rust participant library, pinned to a commit of `luiswirth/agentwire`.
 - `just ci` runs every check.
   The tests in `tests/` run a relay in-process, from the `agentwire-relay` crate of the same commit.
 - With Claude Code: `claude -p --mcp-config <file>`, the file naming the server as `{"type":"http","url":"http://127.0.0.1:8792/mcp"}`.
   `-p` declares no tasks, so it takes the blocking path.
-- The flake's `nixosModules.default` runs it as a NixOS service, on 127.0.0.1, with the hosts and the relay as options.
+- The flake's `nixosModules.default` runs it as a NixOS service, on 127.0.0.1, with the hosts, the relay, and the account service as options.
   It is meant for lwirth-cloud (`~/dev/dotcloud`), behind Caddy at `vibetogether.agentics.lwirth.com/mcp`, which serves the rest of that host as the static page.
 
 Provenance: agent-autonomous

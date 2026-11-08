@@ -8,6 +8,10 @@
 //! the server waits for newer entries without moving the read position,
 //! and acknowledges the entries it hands over as it hands them over.
 
+mod accounts;
+
+pub use accounts::Accounts;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,10 +19,12 @@ use std::time::Duration;
 use agentwire::chat::{self, Ping};
 use agentwire::{Client, Entry, Joined, Presence, Receive};
 
+use axum::http::request::Parts;
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::tool::ToolCallContext;
+use rmcp::handler::server::tool::{Extension, ToolCallContext};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams, ContentBlock,
@@ -35,7 +41,8 @@ use serde_json::Value;
 
 const INSTRUCTIONS: &str = "\
 You can take part in a Vibe Together room: people and agents talking in one session.
-Join with the session's token or link and your name, such as luis/claude for luis's agent.
+Join with the session's token or link and your name, such as luiswirth/claude for luiswirth's agent.
+A name marked verified is that account's or one of its agents'; any other name says only who joined with it.
 Everyone in the room gets every message, and a message pings, that is wakes, only whom it names. \
 A message to the room pings everyone: when it doesn't concern all, ping only whom it concerns, \
 and for an update nobody needs to act on, ping no one. A message that doesn't ping you is an fyi: \
@@ -53,7 +60,7 @@ const TASK_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 /// The largest image handed to the agent as an image; a larger one is described instead.
 const IMAGE_MAX: u64 = 5 * 1024 * 1024;
 /// The largest MCP request: a payload of the relay's 10 MB, in base64, with room to spare.
-const REQUEST_MAX: usize = 16 * 1024 * 1024;
+pub(crate) const REQUEST_MAX: usize = 16 * 1024 * 1024;
 
 /// The server: one value shared by every MCP request.
 #[derive(Clone)]
@@ -93,7 +100,7 @@ struct Handover {
 struct JoinArgs {
     /// The session's token, or its full link for a relay other than the default.
     session: String,
-    /// Your name, lower case with hyphens, as `<person>/<agent>` such as `luis/claude`.
+    /// Your name, lower case with hyphens, as `<person>/<agent>` such as `luiswirth/claude`.
     name: String,
 }
 
@@ -143,8 +150,13 @@ impl Room {
     #[tool(
         description = "Join a session. Returns your own link, a secret that the other tools take."
     )]
-    async fn join(&self, Parameters(args): Parameters<JoinArgs>) -> CallToolResult {
-        outcome(self.join_session(&args.session, &args.name).await)
+    async fn join(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<JoinArgs>,
+    ) -> CallToolResult {
+        let token = accounts::bearer(&parts.headers);
+        outcome(self.join_session(&args.session, &args.name, token).await)
     }
 
     #[tool(
@@ -157,8 +169,13 @@ impl Room {
     #[tool(
         description = "Wait until a message pings you, then return it with everything said since your last receive, each marked ping or fyi. Call it whenever you are done with your own work."
     )]
-    async fn receive(&self, Parameters(args): Parameters<LinkArgs>) -> CallToolResult {
-        self.receive_handing_over(&args.link).await
+    async fn receive(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<LinkArgs>,
+    ) -> CallToolResult {
+        let token = accounts::bearer(&parts.headers);
+        self.receive_handing_over(&args.link, token).await
     }
 
     #[tool(description = "Leave the session.")]
@@ -168,13 +185,19 @@ impl Room {
 }
 
 impl Room {
-    async fn join_session(&self, session: &str, name: &str) -> Result<String, String> {
+    /// Joins with the token the agent's MCP client presented, where it presented one.
+    async fn join_session(
+        &self,
+        session: &str,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<String, String> {
         let link = if session.contains("://") {
             session.trim_end_matches('/').to_owned()
         } else {
             format!("{}/v2/s/{}", self.relay, session.trim())
         };
-        let joined = self.client.join(&link, name).await.map_err(fail)?;
+        let joined = self.client.join(&link, name, token).await.map_err(fail)?;
         self.know(&joined);
         let now = Receive {
             after: Some(joined.read),
@@ -247,14 +270,18 @@ impl Room {
 
     /// Takes entries from the relay until one pings this participant, then returns all of
     /// them, without acknowledging them.
-    async fn receive_for(&self, link: &str) -> Result<(Vec<ContentBlock>, Handover), String> {
+    async fn receive_for(
+        &self,
+        link: &str,
+        token: Option<&str>,
+    ) -> Result<(Vec<ContentBlock>, Handover), String> {
         let name = match self.participant(link, |p| p.name.clone()) {
             Some(name) => name,
             None => {
                 // Fetching an entry fails for a link that is not in, without side effects,
                 // before joining again, which does nothing while in, tells whose the link is.
                 self.client.fetch(link, 1).await.map_err(fail)?;
-                let joined = self.client.rejoin(link).await.map_err(fail)?;
+                let joined = self.client.rejoin(link, token).await.map_err(fail)?;
                 self.know(&joined);
                 joined.name
             }
@@ -282,8 +309,8 @@ impl Room {
     }
 
     /// Receives and acknowledges at once, for a client that gets the result right away.
-    async fn receive_handing_over(&self, link: &str) -> CallToolResult {
-        match self.receive_for(link).await {
+    async fn receive_handing_over(&self, link: &str, token: Option<&str>) -> CallToolResult {
+        match self.receive_for(link, token).await {
             Ok((content, handover)) => {
                 self.hand_over(handover).await;
                 CallToolResult::success(content)
@@ -342,10 +369,11 @@ impl Room {
     async fn receive_blocking(
         &self,
         link: &str,
+        bearer: Option<&str>,
         context: &RequestContext<RoleServer>,
     ) -> CallToolResult {
         let token = context.meta.get_progress_token();
-        let receive = self.receive_handing_over(link);
+        let receive = self.receive_handing_over(link, bearer);
         tokio::pin!(receive);
         let mut ticks =
             tokio::time::interval_at(tokio::time::Instant::now() + PROGRESS_EVERY, PROGRESS_EVERY);
@@ -456,12 +484,18 @@ impl ServerHandler for Room {
         let LinkArgs { link } =
             serde_json::from_value(Value::Object(request.arguments.unwrap_or_default()))
                 .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let token = context
+            .extensions
+            .get::<Parts>()
+            .and_then(|parts| accounts::bearer(&parts.headers))
+            .map(str::to_owned);
         if !context
             .client_capabilities()
             .is_some_and(|caps| caps.supports_tasks())
         {
             return Ok(CallToolResponse::Complete(
-                self.receive_blocking(&link, &context).await,
+                self.receive_blocking(&link, token.as_deref(), &context)
+                    .await,
             ));
         }
         let room = self.clone();
@@ -471,7 +505,7 @@ impl ServerHandler for Room {
             Box::pin(async move {
                 let received = tokio::select! {
                     _ = task.cancelled() => return Err(TaskExit::Cancelled),
-                    received = tokio::time::timeout(TASK_WAIT, room.receive_for(&link)) => received,
+                    received = tokio::time::timeout(TASK_WAIT, room.receive_for(&link, token.as_deref())) => received,
                 };
                 Ok(match received {
                     Ok(Ok((content, handover))) => {
@@ -526,9 +560,26 @@ impl ServerHandler for Room {
     }
 }
 
-/// The service to mount at a path of an HTTP server, such as `/mcp`,
-/// accepting requests for the hosts given, such as `localhost` or a public domain.
-pub fn service(
+/// The server at `/mcp`, accepting requests for the hosts given, such as `localhost` or
+/// a public domain, and with an account service, asking to sign in to it where joining
+/// a room needs it.
+pub fn router(
+    room: Room,
+    hosts: impl IntoIterator<Item = impl Into<String>>,
+    accounts: Option<Accounts>,
+) -> axum::Router {
+    let relay = room.relay.clone();
+    let router = axum::Router::new().nest_service("/mcp", service(room, hosts));
+    match accounts {
+        Some(accounts) => router.layer(axum::middleware::from_fn_with_state(
+            Arc::new(accounts.on(&relay)),
+            accounts::check,
+        )),
+        None => router,
+    }
+}
+
+fn service(
     room: Room,
     hosts: impl IntoIterator<Item = impl Into<String>>,
 ) -> StreamableHttpService<Room, LocalSessionManager> {
@@ -547,18 +598,37 @@ fn describe_presence(presence: Option<&BTreeMap<String, Presence>>, me: &str) ->
             people
                 .iter()
                 .map(|(name, state)| {
-                    if name == me {
-                        format!("{name} (you)")
-                    } else if state.receiving {
-                        format!("{name} (listening)")
-                    } else {
+                    let marks: Vec<String> = [
+                        (name == me).then(|| "you".to_owned()),
+                        state
+                            .account
+                            .as_deref()
+                            .map(|account| verified(name, account)),
+                        (name != me && state.receiving).then(|| "listening".to_owned()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    if marks.is_empty() {
                         name.clone()
+                    } else {
+                        format!("{name} ({})", marks.join(", "))
                     }
                 })
                 .collect()
         })
         .unwrap_or_default();
     format!("In the room: {}.", names.join(", "))
+}
+
+/// What a name's account says of it: that it is verified, where the name is the
+/// account's or one of its agents', as Vibe Together's accounts make it.
+fn verified(name: &str, account: &str) -> String {
+    if name.split('/').next() == Some(account) {
+        "verified".to_owned()
+    } else {
+        format!("account {account}")
+    }
 }
 
 /// What the agent reads of a failed request to the relay.

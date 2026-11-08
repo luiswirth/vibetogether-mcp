@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use agentwire_relay::Relay;
+use agentwire_relay::{Options, Relay};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use rmcp::model::{
@@ -14,7 +14,7 @@ use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient, object};
 use tokio::net::TcpListener;
-use vibetogether_mcp::{Room, service};
+use vibetogether_mcp::{Room, router};
 
 struct World {
     mcp: String,
@@ -32,10 +32,8 @@ async fn serve(router: axum::Router) -> String {
 
 /// A relay, the server, and a session that `luis` joined.
 async fn world() -> World {
-    let relay = serve(Relay::open(None).unwrap().router()).await;
-    let mcp =
-        serve(axum::Router::new().nest_service("/mcp", service(Room::new(&relay), ["127.0.0.1"])))
-            .await;
+    let relay = serve(Relay::open(Options::default()).unwrap().router()).await;
+    let mcp = serve(router(Room::new(&relay), ["127.0.0.1"], None)).await;
     let http = reqwest::Client::new();
     let session = http
         .post(format!("{relay}/v2/s"))
