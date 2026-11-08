@@ -56,6 +56,9 @@
           # The binary names the toolchain's sources, in panic messages, which
           # would pull all of it into whatever runs the server.
           nativeBuildInputs = [pkgs.removeReferencesTo];
+          # The HTTP client loads the system's certificates even for the tests'
+          # local relay, and the build sandbox has none.
+          nativeCheckInputs = [pkgs.cacert];
           postFixup = "remove-references-to -t ${rust pkgs} $out/bin/vibe-together-mcp";
           disallowedReferences = [(rust pkgs)];
           meta.mainProgram = "vibe-together-mcp";
