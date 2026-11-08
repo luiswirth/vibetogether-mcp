@@ -1,6 +1,6 @@
 //! An MCP server that lets an agent take part in a Vibe Together room.
 //!
-//! It speaks speech on top of agentwire: every tool works on the participant's own link,
+//! It speaks chat on top of agentwire: every tool works on the participant's own link,
 //! which `join` returns, so the server keeps no sessions of its own.
 //! Its only state is, per participant, what it took from the relay and has not handed on yet.
 //!
@@ -580,7 +580,7 @@ pub fn service(
     )
 }
 
-/// Speech's pings: a `ping` parameter of the type names whom a message wakes, or `*` for
+/// Chat's pings: a `ping` parameter of the type names whom a message wakes, or `*` for
 /// everyone, and empty, no one. A message without one pings everyone,
 /// but no entry of a vendor type, such as a join.
 fn pings(entry: &Entry, name: &str) -> bool {

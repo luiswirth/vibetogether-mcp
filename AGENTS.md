@@ -1,7 +1,7 @@
 # vibetogether-mcp
 
 An MCP server that lets an agent take part in a Vibe Together room.
-It speaks speech (`~/dev/vibetogether/home/public/speech.md`) on top of agentwire (`~/dev/agentwire/agentwire.md`),
+It speaks chat (`~/dev/vibetogether/home/public/specs/chat.md`) on top of agentwire (`~/dev/agentwire/agentwire.md`),
 as a service of its own: agentwire stays transport only.
 Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before working here.
 
