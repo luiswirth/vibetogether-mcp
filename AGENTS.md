@@ -25,8 +25,9 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
   and `VIBETOGETHER_MCP_HOSTS`, separated by commas, the hosts it accepts, by default only loopback ones.
   A session token alone means the relay at `AGENTWIRE_RELAY`, by default the public one;
   for a local relay, run `just dev` in `~/dev/agentwire` and set `AGENTWIRE_RELAY=http://127.0.0.1:8790`.
+- It speaks agentwire through the `agentwire` crate, agentwire's Rust participant library, pinned to a commit of `luiswirth/agentwire`.
 - `just ci` runs every check.
-  The tests in `tests/` run a relay in-process, from the `agentwire-relay` crate, pinned to a commit of `luiswirth/agentwire`.
+  The tests in `tests/` run a relay in-process, from the `agentwire-relay` crate of the same commit.
 - With Claude Code: `claude -p --mcp-config <file>`, the file naming the server as `{"type":"http","url":"http://127.0.0.1:8792/mcp"}`.
   `-p` declares no tasks, so it takes the blocking path.
 - The flake's `nixosModules.default` runs it as a NixOS service, on 127.0.0.1, with the hosts and the relay as options.

@@ -3,10 +3,21 @@
 version = 4
 
 [[package]]
+name = "agentwire"
+version = "0.1.0"
+source = "git+https://github.com/luiswirth/agentwire?rev=5a864a70f9243281766619822b5c49877bb6b5f9#5a864a70f9243281766619822b5c49877bb6b5f9"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agentwire-relay"
 version = "0.1.0"
-source = "git+https://github.com/luiswirth/agentwire?rev=7ec01bdfcd3a475d27529bb71de69ba91c79ca1d#7ec01bdfcd3a475d27529bb71de69ba91c79ca1d"
+source = "git+https://github.com/luiswirth/agentwire?rev=5a864a70f9243281766619822b5c49877bb6b5f9#5a864a70f9243281766619822b5c49877bb6b5f9"
 dependencies = [
+ "agentwire",
  "axum",
  "base64",
  "form_urlencoded",
@@ -1881,6 +1892,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 name = "vibetogether-mcp"
 version = "0.1.0"
 dependencies = [
+ "agentwire",
  "agentwire-relay",
  "axum",
  "base64",

@@ -8,9 +8,12 @@
 //! the server waits for newer entries without moving the read position,
 //! and acknowledges the entries it hands over as it hands them over.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use agentwire::chat::Ping;
+use agentwire::{Client, Entry, Joined, Presence, Receive};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -57,7 +60,7 @@ const REQUEST_MAX: usize = 16 * 1024 * 1024;
 pub struct Room {
     /// The relay a session token alone refers to.
     pub relay: String,
-    http: reqwest::Client,
+    client: Client,
     participants: Arc<Mutex<HashMap<String, Participant>>>,
     tasks: TaskManager,
     /// What a finished receive task hands over, by task: acknowledged once the client
@@ -77,24 +80,13 @@ struct Participant {
     read: u64,
     /// Entries taken from the relay and not yet handed to the agent.
     pending: Vec<Entry>,
-    presence: Option<Value>,
+    presence: Option<BTreeMap<String, Presence>>,
 }
 
 /// Entries handed to the agent, up to `read`, to acknowledge at the relay.
 struct Handover {
     link: String,
     read: u64,
-}
-
-#[derive(Clone, Deserialize)]
-struct Entry {
-    n: u64,
-    from: String,
-    #[serde(rename = "type")]
-    kind: String,
-    size: u64,
-    filename: Option<String>,
-    text: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -140,7 +132,7 @@ impl Room {
     pub fn new(relay: impl Into<String>) -> Self {
         Self {
             relay: relay.into().trim_end_matches('/').to_owned(),
-            http: reqwest::Client::new(),
+            client: Client::new(),
             participants: Arc::default(),
             tasks: TaskManager::new(),
             handovers: Arc::default(),
@@ -182,29 +174,24 @@ impl Room {
         } else {
             format!("{}/v2/s/{}", self.relay, session.trim())
         };
-        let request = self
-            .http
-            .post(format!("{link}/join"))
-            .query(&[("as", name)]);
-        let joined: Joined = parse(&relay(request).await?)?;
+        let joined = self.client.join(&link, name).await.map_err(fail)?;
         self.know(&joined);
-        let request = self.http.get(&joined.link).query(&[
-            ("after", joined.read),
-            ("read", joined.read),
-            ("wait", 0),
-        ]);
-        let presence = relay(request)
-            .await?
-            .lines()
-            .last()
-            .map(parse::<Value>)
-            .transpose()?;
-        let presence = presence.map(|line| line["presence"].clone());
+        let now = Receive {
+            after: Some(joined.read),
+            read: Some(joined.read),
+            wait: Some(Duration::ZERO),
+            ..Receive::default()
+        };
+        let received = self
+            .client
+            .receive(&joined.link, &now)
+            .await
+            .map_err(fail)?;
         Ok(format!(
             "Joined as {}. Your own link, a secret that send, receive and leave take: {}\n{}",
             joined.name,
             joined.link,
-            describe_presence(presence.as_ref(), &joined.name),
+            describe_presence(Some(&received.presence), &joined.name),
         ))
     }
 
@@ -217,46 +204,43 @@ impl Room {
     }
 
     async fn say(&self, args: SendArgs) -> Result<String, String> {
-        let ping = match &args.ping {
-            None => String::new(),
+        let ping = match args.ping {
+            None => None,
             Some(names) => {
-                if names
-                    .iter()
-                    .any(|name| name.is_empty() || name.contains([' ', '"']))
-                {
+                if !names.iter().all(|name| name == "*" || Ping::valid(name)) {
                     return Err("ping takes names, or *, each without spaces or quotes".to_owned());
                 }
-                format!("; ping=\"{}\"", names.join(" "))
+                Some(if names.iter().any(|name| name == "*") {
+                    Ping::Everyone
+                } else {
+                    Ping::Only(names)
+                })
             }
         };
-        let request = match (args.text, args.file) {
-            (Some(text), None) => self
-                .http
-                .post(&args.link)
-                .header("content-type", format!("text/markdown{ping}"))
-                .body(text),
+        let typed = |kind: &str| match &ping {
+            None => kind.to_owned(),
+            Some(ping) => ping.on(kind),
+        };
+        let (kind, filename, body) = match (args.text, args.file) {
+            (Some(text), None) => (typed("text/markdown"), None, text.into_bytes()),
             (None, Some(file)) => {
                 let data = BASE64
                     .decode(file.data.trim())
                     .map_err(|error| format!("the file's data is no base64: {error}"))?;
-                let mut request = self
-                    .http
-                    .post(&args.link)
-                    .header("content-type", format!("{}{ping}", file.kind))
-                    .body(data);
-                if let Some(name) = file.name {
-                    request = request.query(&[("filename", name)]);
-                }
-                request
+                (typed(&file.kind), file.name, data)
             }
             _ => return Err("give either a text or a file".to_owned()),
         };
-        let sent: Value = parse(&relay(request).await?)?;
-        Ok(format!("Sent as #{}.", sent["n"]))
+        let n = self
+            .client
+            .send(&args.link, &kind, filename.as_deref(), body)
+            .await
+            .map_err(fail)?;
+        Ok(format!("Sent as #{n}."))
     }
 
     async fn leave_session(&self, link: &str) -> Result<String, String> {
-        relay(self.http.post(format!("{link}/leave"))).await?;
+        self.client.leave(link).await.map_err(fail)?;
         self.participants.lock().unwrap().remove(link);
         Ok("Left the session.".to_owned())
     }
@@ -269,8 +253,8 @@ impl Room {
             None => {
                 // Fetching an entry fails for a link that is not in, without side effects,
                 // before joining again, which does nothing while in, tells whose the link is.
-                relay(self.http.get(format!("{link}/1"))).await?;
-                let joined: Joined = parse(&relay(self.http.post(format!("{link}/join"))).await?)?;
+                self.client.fetch(link, 1).await.map_err(fail)?;
+                let joined = self.client.rejoin(link).await.map_err(fail)?;
                 self.know(&joined);
                 joined.name
             }
@@ -315,34 +299,31 @@ impl Room {
             p.read = p.read.max(read);
             p.taken
         });
-        let request = self
-            .http
-            .get(&link)
-            .query(&[("after", taken), ("read", read), ("wait", 0)]);
+        let now = Receive {
+            after: Some(taken),
+            read: Some(read),
+            wait: Some(Duration::ZERO),
+            ..Receive::default()
+        };
         // The next receive acknowledges it anyway, through its read position.
-        let _ = relay(request).await;
+        let _ = self.client.receive(&link, &now).await;
     }
 
     /// One receive from the relay, after what was taken, into what is pending,
     /// leaving the read position at what was handed over.
     async fn pull(&self, link: &str) -> Result<(), String> {
         let (taken, read) = self.participant(link, |p| (p.taken, p.read));
-        let request = self.http.get(link).query(&[
-            ("after", taken),
-            ("read", read),
-            ("wait", RELAY_WAIT.as_secs()),
-        ]);
-        let body = relay(request).await?;
-        let mut lines: Vec<&str> = body.lines().collect();
-        let presence = lines.pop().map(parse::<Value>).transpose()?;
-        let entries = lines
-            .into_iter()
-            .map(parse::<Entry>)
-            .collect::<Result<Vec<_>, _>>()?;
+        let receive = Receive {
+            after: Some(taken),
+            read: Some(read),
+            wait: Some(RELAY_WAIT),
+            ..Receive::default()
+        };
+        let received = self.client.receive(link, &receive).await.map_err(fail)?;
         self.participant(link, |p| {
-            p.taken = entries.last().map_or(p.taken, |entry| entry.n);
-            p.pending.extend(entries);
-            p.presence = presence.map(|presence| presence["presence"].clone());
+            p.taken = received.entries.last().map_or(p.taken, |entry| entry.n);
+            p.pending.extend(received.entries);
+            p.presence = Some(received.presence);
         });
         Ok(())
     }
@@ -389,13 +370,13 @@ impl Room {
         entries: &[Entry],
         name: &str,
         link: &str,
-        presence: Option<&Value>,
+        presence: Option<&BTreeMap<String, Presence>>,
     ) -> Vec<ContentBlock> {
         let mut content = Vec::new();
         let mut text = String::new();
         for entry in entries {
             let (n, from) = (entry.n, &entry.from);
-            let essence = entry.kind.split(';').next().unwrap_or_default().trim();
+            let essence = entry.essence();
             let marker = if pings(entry, name) { "ping" } else { "fyi" };
             let heading = format!("#{n} from {from} ({marker})");
             let file = format!(
@@ -408,21 +389,18 @@ impl Room {
                 entry.size
             );
             match (essence, &entry.text) {
-                ("application/vnd.agentwire.join", _) => {
-                    text.push_str(&format!("#{n} {from} joined."))
-                }
-                ("application/vnd.agentwire.leave", _) => {
-                    text.push_str(&format!("#{n} {from} left."))
-                }
+                (agentwire::JOIN, _) => text.push_str(&format!("#{n} {from} joined.")),
+                (agentwire::LEAVE, _) => text.push_str(&format!("#{n} {from} left.")),
                 (_, Some(body)) if essence.starts_with("text/") && entry.filename.is_none() => {
                     text.push_str(&format!("{heading}:\n{body}"))
                 }
                 (_, _) if essence.starts_with("image/") && entry.size <= IMAGE_MAX => {
-                    match self.fetch(link, n).await {
-                        Ok(data) => {
+                    match self.client.fetch(link, n).await {
+                        Ok(payload) => {
                             text.push_str(&format!("{heading}: {file}, shown next."));
                             content.push(ContentBlock::text(std::mem::take(&mut text)));
-                            content.push(ContentBlock::image(BASE64.encode(data), essence));
+                            content
+                                .push(ContentBlock::image(BASE64.encode(payload.bytes), essence));
                         }
                         Err(error) => {
                             text.push_str(&format!("{heading}: {file}, not fetched: {error}"))
@@ -439,27 +417,6 @@ impl Room {
         content.push(ContentBlock::text(text));
         content
     }
-
-    async fn fetch(&self, link: &str, n: u64) -> Result<Vec<u8>, String> {
-        let response = self
-            .http
-            .get(format!("{link}/{n}"))
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("relay answered {}", response.status().as_u16()));
-        }
-        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-        Ok(bytes.to_vec())
-    }
-}
-
-#[derive(Deserialize)]
-struct Joined {
-    name: String,
-    read: u64,
-    link: String,
 }
 
 impl ServerHandler for Room {
@@ -584,34 +541,21 @@ pub fn service(
 /// everyone, and empty, no one. A message without one pings everyone,
 /// but no entry of a vendor type, such as a join.
 fn pings(entry: &Entry, name: &str) -> bool {
-    let essence = entry.kind.split(';').next().unwrap_or_default().trim();
-    match ping(entry) {
-        Some(names) => names
-            .split_whitespace()
-            .any(|pinged| pinged == "*" || pinged == name),
-        None => !essence.starts_with("application/vnd."),
+    match Ping::of(&entry.kind) {
+        Some(ping) => ping.pings(name),
+        None => !entry.essence().starts_with("application/vnd."),
     }
 }
 
-fn ping(entry: &Entry) -> Option<&str> {
-    entry.kind.split(';').skip(1).find_map(|parameter| {
-        let (key, value) = parameter.split_once('=')?;
-        key.trim()
-            .eq_ignore_ascii_case("ping")
-            .then(|| value.trim().trim_matches('"'))
-    })
-}
-
-fn describe_presence(presence: Option<&Value>, me: &str) -> String {
+fn describe_presence(presence: Option<&BTreeMap<String, Presence>>, me: &str) -> String {
     let names: Vec<String> = presence
-        .and_then(Value::as_object)
         .map(|people| {
             people
                 .iter()
                 .map(|(name, state)| {
                     if name == me {
                         format!("{name} (you)")
-                    } else if state["receiving"].as_bool() == Some(true) {
+                    } else if state.receiving {
                         format!("{name} (listening)")
                     } else {
                         name.clone()
@@ -623,27 +567,9 @@ fn describe_presence(presence: Option<&Value>, me: &str) -> String {
     format!("In the room: {}.", names.join(", "))
 }
 
-/// Sends a request to the relay and returns its body, or the relay's one line of why not.
-async fn relay(request: reqwest::RequestBuilder) -> Result<String, String> {
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("relay unreachable: {error}"))?;
-    let status = response.status();
-    let body = response.text().await.map_err(|error| error.to_string())?;
-    if status.is_success() {
-        Ok(body)
-    } else {
-        Err(format!(
-            "relay answered {}: {}",
-            status.as_u16(),
-            body.trim()
-        ))
-    }
-}
-
-fn parse<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
-    serde_json::from_str(text).map_err(|error| format!("unexpected answer from the relay: {error}"))
+/// What the agent reads of a failed request to the relay.
+fn fail(error: agentwire::Error) -> String {
+    error.to_string()
 }
 
 fn outcome(result: Result<String, String>) -> CallToolResult {

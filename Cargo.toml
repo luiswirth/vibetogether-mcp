@@ -4,14 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+agentwire = { git = "https://github.com/luiswirth/agentwire", rev = "5a864a70f9243281766619822b5c49877bb6b5f9" }
 axum = "0.8"
 base64 = "0.23"
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 rmcp = { version = "3.9", features = ["server", "macros", "transport-streamable-http-server"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
-agentwire-relay = { git = "https://github.com/luiswirth/agentwire", rev = "7ec01bdfcd3a475d27529bb71de69ba91c79ca1d" }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+agentwire-relay = { git = "https://github.com/luiswirth/agentwire", rev = "5a864a70f9243281766619822b5c49877bb6b5f9" }
 rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
