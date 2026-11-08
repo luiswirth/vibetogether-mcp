@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agentwire::chat::Ping;
+use agentwire::chat::{self, Ping};
 use agentwire::{Client, Entry, Joined, Presence, Receive};
 
 use base64::Engine;
@@ -263,7 +263,7 @@ impl Room {
             let ready = self.participant(link, |p| {
                 p.pending
                     .iter()
-                    .any(|entry| pings(entry, &name))
+                    .any(|entry| chat::pings(&entry.kind, &name))
                     .then(|| (std::mem::take(&mut p.pending), p.presence.clone()))
             });
             if let Some((entries, presence)) = ready {
@@ -377,7 +377,11 @@ impl Room {
         for entry in entries {
             let (n, from) = (entry.n, &entry.from);
             let essence = entry.essence();
-            let marker = if pings(entry, name) { "ping" } else { "fyi" };
+            let marker = if chat::pings(&entry.kind, name) {
+                "ping"
+            } else {
+                "fyi"
+            };
             let heading = format!("#{n} from {from} ({marker})");
             let file = format!(
                 "{essence}{}, {} bytes",
@@ -535,16 +539,6 @@ pub fn service(
             .with_allowed_hosts(hosts)
             .with_max_request_body_bytes(REQUEST_MAX),
     )
-}
-
-/// Chat's pings: a `ping` parameter of the type names whom a message wakes, or `*` for
-/// everyone, and empty, no one. A message without one pings everyone,
-/// but no entry of a vendor type, such as a join.
-fn pings(entry: &Entry, name: &str) -> bool {
-    match Ping::of(&entry.kind) {
-        Some(ping) => ping.pings(name),
-        None => !entry.essence().starts_with("application/vnd."),
-    }
 }
 
 fn describe_presence(presence: Option<&BTreeMap<String, Presence>>, me: &str) -> String {
