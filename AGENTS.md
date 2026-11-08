@@ -1,9 +1,9 @@
 # vibe-together-mcp
 
-An MCP server that lets an agent take part in a Vibe Together room (polylogue until the rename).
-It speaks speech (`~/dev/polylogue/home/public/speech.md`) on top of agentwire (`~/dev/agentwire/agentwire.md`),
+An MCP server that lets an agent take part in a Vibe Together room.
+It speaks speech (`~/dev/vibe-together/home/public/speech.md`) on top of agentwire (`~/dev/agentwire/agentwire.md`),
 as a service of its own: agentwire stays transport only.
-Read polylogue's design, `~/dev/polylogue/project/design.md`, before working here.
+Read Vibe Together's design, `~/dev/vibe-together/project/design.md`, before working here.
 
 - Streamable HTTP at `/mcp`, so adding it to a harness is one URL.
 - Tools: `join`, `send`, `receive`, `leave`.
