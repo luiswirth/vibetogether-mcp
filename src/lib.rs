@@ -2,12 +2,18 @@
 //!
 //! It speaks speech on top of agentwire: every tool works on the participant's own link,
 //! which `join` returns, so the server keeps no sessions of its own.
-//! Its only state is what it took from the relay for a participant and has not handed on yet.
+//! Its only state is, per participant, what it took from the relay and has not handed on yet.
+//!
+//! A message counts as read exactly when it is in the agent's context:
+//! the server waits for newer entries without moving the read position,
+//! and acknowledges the entries it hands over as it hands them over.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
@@ -38,6 +44,10 @@ const RELAY_WAIT: Duration = Duration::from_secs(600);
 const PROGRESS_EVERY: Duration = Duration::from_secs(30);
 /// How long a receive as a task waits at most; its task lives a minute longer.
 const TASK_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+/// The largest image handed to the agent as an image; a larger one is described instead.
+const IMAGE_MAX: u64 = 5 * 1024 * 1024;
+/// The largest MCP request: a payload of the relay's 10 MB, in base64, with room to spare.
+const REQUEST_MAX: usize = 16 * 1024 * 1024;
 
 /// The server: one value shared by every MCP request.
 #[derive(Clone)]
@@ -47,6 +57,9 @@ pub struct Room {
     http: reqwest::Client,
     participants: Arc<Mutex<HashMap<String, Participant>>>,
     tasks: TaskManager,
+    /// What a finished receive task hands over, by task: acknowledged once the client
+    /// has fetched its result.
+    handovers: Arc<Mutex<HashMap<String, Handover>>>,
     tool_router: ToolRouter<Room>,
 }
 
@@ -55,12 +68,19 @@ pub struct Room {
 struct Participant {
     name: Option<String>,
     /// The number of the last entry taken from the relay, after which the next receive
-    /// from it starts: receiving after a number acknowledges only up to it.
-    taken: Option<u64>,
-    /// Entries taken from the relay and not yet returned by a receive, so that a receive
-    /// cut off loses nothing.
+    /// from it starts.
+    taken: u64,
+    /// The number of the last entry handed to the agent: its read position at the relay.
+    read: u64,
+    /// Entries taken from the relay and not yet handed to the agent.
     pending: Vec<Entry>,
     presence: Option<Value>,
+}
+
+/// Entries handed to the agent, up to `read`, to acknowledge at the relay.
+struct Handover {
+    link: String,
+    read: u64,
 }
 
 #[derive(Clone, Deserialize)]
@@ -88,8 +108,21 @@ struct SendArgs {
     link: String,
     /// Whom the message is for: names, or `*` for everyone.
     to: Vec<String>,
-    /// The message, in markdown.
-    text: String,
+    /// The message, in markdown. Give either this or a file.
+    text: Option<String>,
+    /// An image or any other file, at most 10 MB. Give either this or a text.
+    file: Option<File>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct File {
+    /// The file's content, in base64.
+    data: String,
+    /// Its MIME type, such as `image/png`; an image is shown inline.
+    #[serde(rename = "type")]
+    kind: String,
+    /// Its file name, such as `plot.png`.
+    name: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -106,6 +139,7 @@ impl Room {
             http: reqwest::Client::new(),
             participants: Arc::default(),
             tasks: TaskManager::new(),
+            handovers: Arc::default(),
             tool_router: Self::tool_router(),
         }
     }
@@ -118,17 +152,17 @@ impl Room {
     }
 
     #[tool(
-        description = "Say something in the session, to the names you choose or `*` for everyone."
+        description = "Say something in the session, or share an image or a file, to the names you choose or `*` for everyone."
     )]
     async fn send(&self, Parameters(args): Parameters<SendArgs>) -> CallToolResult {
-        outcome(self.say(&args.link, &args.to, &args.text).await)
+        outcome(self.say(args).await)
     }
 
     #[tool(
         description = "Wait until a message is for you, then return it with everything said since your last receive. Call it whenever you are done with your own work."
     )]
     async fn receive(&self, Parameters(args): Parameters<LinkArgs>) -> CallToolResult {
-        outcome(self.receive_for(&args.link).await)
+        self.receive_handing_over(&args.link).await
     }
 
     #[tool(description = "Leave the session.")]
@@ -144,26 +178,17 @@ impl Room {
         } else {
             format!("{}/v2/s/{}", self.relay, session.trim())
         };
-        #[derive(Deserialize)]
-        struct Joined {
-            name: String,
-            read: u64,
-            link: String,
-        }
         let request = self
             .http
             .post(format!("{link}/join"))
             .query(&[("as", name)]);
         let joined: Joined = parse(&relay(request).await?)?;
-        self.participant(&joined.link, |p| {
-            p.name = Some(joined.name.clone());
-            p.taken = Some(joined.read);
-        });
-        let request = self
-            .http
-            .get(&joined.link)
-            .query(&[("after", joined.read)])
-            .query(&[("wait", 0)]);
+        self.know(&joined);
+        let request = self.http.get(&joined.link).query(&[
+            ("after", joined.read),
+            ("read", joined.read),
+            ("wait", 0),
+        ]);
         let presence = relay(request)
             .await?
             .lines()
@@ -179,7 +204,16 @@ impl Room {
         ))
     }
 
-    async fn say(&self, link: &str, to: &[String], text: &str) -> Result<String, String> {
+    fn know(&self, joined: &Joined) {
+        self.participant(&joined.link, |p| {
+            p.name = Some(joined.name.clone());
+            p.taken = joined.read;
+            p.read = joined.read;
+        });
+    }
+
+    async fn say(&self, args: SendArgs) -> Result<String, String> {
+        let to = &args.to;
         if to.is_empty()
             || to
                 .iter()
@@ -189,12 +223,29 @@ impl Room {
                 "to needs at least one name, or *, each without spaces or quotes".to_owned(),
             );
         }
-        let kind = format!("text/markdown; to=\"{}\"", to.join(" "));
-        let request = self
-            .http
-            .post(link)
-            .header("content-type", kind)
-            .body(text.to_owned());
+        let to = format!("to=\"{}\"", to.join(" "));
+        let request = match (args.text, args.file) {
+            (Some(text), None) => self
+                .http
+                .post(&args.link)
+                .header("content-type", format!("text/markdown; {to}"))
+                .body(text),
+            (None, Some(file)) => {
+                let data = BASE64
+                    .decode(file.data.trim())
+                    .map_err(|error| format!("the file's data is no base64: {error}"))?;
+                let mut request = self
+                    .http
+                    .post(&args.link)
+                    .header("content-type", format!("{}; {to}", file.kind))
+                    .body(data);
+                if let Some(name) = file.name {
+                    request = request.query(&[("filename", name)]);
+                }
+                request
+            }
+            _ => return Err("give either a text or a file".to_owned()),
+        };
         let sent: Value = parse(&relay(request).await?)?;
         Ok(format!("Sent as #{}.", sent["n"]))
     }
@@ -205,45 +256,77 @@ impl Room {
         Ok("Left the session.".to_owned())
     }
 
-    /// Takes entries from the relay until one is for this participant,
-    /// then returns all of them.
-    async fn receive_for(&self, link: &str) -> Result<String, String> {
+    /// Takes entries from the relay until one is for this participant, then returns all of
+    /// them, without acknowledging them.
+    async fn receive_for(&self, link: &str) -> Result<(Vec<ContentBlock>, Handover), String> {
         let name = match self.participant(link, |p| p.name.clone()) {
             Some(name) => name,
             None => {
-                // A receive that returns at once fails for a link that is not in,
-                // before joining again tells whose the link is.
-                self.pull(link, Duration::ZERO).await?;
-                let joined: Value = parse(&relay(self.http.post(format!("{link}/join"))).await?)?;
-                let name = joined["name"].as_str().unwrap_or_default().to_owned();
-                self.participant(link, |p| p.name = Some(name.clone()));
-                name
+                // Fetching an entry fails for a link that is not in, without side effects,
+                // before joining again, which does nothing while in, tells whose the link is.
+                relay(self.http.get(format!("{link}/1"))).await?;
+                let joined: Joined = parse(&relay(self.http.post(format!("{link}/join"))).await?)?;
+                self.know(&joined);
+                joined.name
             }
         };
         loop {
-            let delivered = self.participant(link, |p| {
+            let ready = self.participant(link, |p| {
                 p.pending
                     .iter()
                     .any(|entry| addresses(entry, &name))
-                    .then(|| {
-                        let entries = std::mem::take(&mut p.pending);
-                        describe(&entries, &name, link, p.presence.as_ref())
-                    })
+                    .then(|| (std::mem::take(&mut p.pending), p.presence.clone()))
             });
-            if let Some(text) = delivered {
-                return Ok(text);
+            if let Some((entries, presence)) = ready {
+                let read = entries.last().map_or(0, |entry| entry.n);
+                let content = self
+                    .describe(&entries, &name, link, presence.as_ref())
+                    .await;
+                let handover = Handover {
+                    link: link.to_owned(),
+                    read,
+                };
+                return Ok((content, handover));
             }
-            self.pull(link, RELAY_WAIT).await?;
+            self.pull(link).await?;
         }
     }
 
-    /// One receive from the relay, after what was taken, into what is pending.
-    async fn pull(&self, link: &str, wait: Duration) -> Result<(), String> {
-        let after = self.participant(link, |p| p.taken);
-        let mut request = self.http.get(link).query(&[("wait", wait.as_secs())]);
-        if let Some(after) = after {
-            request = request.query(&[("after", after)]);
+    /// Receives and acknowledges at once, for a client that gets the result right away.
+    async fn receive_handing_over(&self, link: &str) -> CallToolResult {
+        match self.receive_for(link).await {
+            Ok((content, handover)) => {
+                self.hand_over(handover).await;
+                CallToolResult::success(content)
+            }
+            Err(error) => outcome(Err(error)),
         }
+    }
+
+    /// Acknowledges at the relay what was handed to the agent.
+    async fn hand_over(&self, handover: Handover) {
+        let Handover { link, read } = handover;
+        let taken = self.participant(&link, |p| {
+            p.read = p.read.max(read);
+            p.taken
+        });
+        let request = self
+            .http
+            .get(&link)
+            .query(&[("after", taken), ("read", read), ("wait", 0)]);
+        // The next receive acknowledges it anyway, through its read position.
+        let _ = relay(request).await;
+    }
+
+    /// One receive from the relay, after what was taken, into what is pending,
+    /// leaving the read position at what was handed over.
+    async fn pull(&self, link: &str) -> Result<(), String> {
+        let (taken, read) = self.participant(link, |p| (p.taken, p.read));
+        let request = self.http.get(link).query(&[
+            ("after", taken),
+            ("read", read),
+            ("wait", RELAY_WAIT.as_secs()),
+        ]);
         let body = relay(request).await?;
         let mut lines: Vec<&str> = body.lines().collect();
         let presence = lines.pop().map(parse::<Value>).transpose()?;
@@ -252,7 +335,7 @@ impl Room {
             .map(parse::<Entry>)
             .collect::<Result<Vec<_>, _>>()?;
         self.participant(link, |p| {
-            p.taken = entries.last().map(|entry| entry.n).or(p.taken);
+            p.taken = entries.last().map_or(p.taken, |entry| entry.n);
             p.pending.extend(entries);
             p.presence = presence.map(|presence| presence["presence"].clone());
         });
@@ -276,14 +359,14 @@ impl Room {
         context: &RequestContext<RoleServer>,
     ) -> CallToolResult {
         let token = context.meta.get_progress_token();
-        let receive = self.receive_for(link);
+        let receive = self.receive_handing_over(link);
         tokio::pin!(receive);
         let mut ticks =
             tokio::time::interval_at(tokio::time::Instant::now() + PROGRESS_EVERY, PROGRESS_EVERY);
         let mut progress = 0.0;
         loop {
             tokio::select! {
-                result = &mut receive => return outcome(result),
+                result = &mut receive => return result,
                 _ = context.ct.cancelled() => return outcome(Err("cancelled".to_owned())),
                 _ = ticks.tick() => if let Some(token) = &token {
                     progress += 1.0;
@@ -294,6 +377,89 @@ impl Room {
             }
         }
     }
+
+    /// The entries as the agent reads them: text, with images inline.
+    async fn describe(
+        &self,
+        entries: &[Entry],
+        name: &str,
+        link: &str,
+        presence: Option<&Value>,
+    ) -> Vec<ContentBlock> {
+        let mut content = Vec::new();
+        let mut text = String::new();
+        for entry in entries {
+            let (n, from) = (entry.n, &entry.from);
+            let essence = entry.kind.split(';').next().unwrap_or_default().trim();
+            let to = recipients(entry).unwrap_or("*");
+            let marker = if addresses(entry, name) {
+                "for you"
+            } else {
+                "context"
+            };
+            let heading = format!("#{n} from {from} to {to} ({marker})");
+            let file = format!(
+                "{essence}{}, {} bytes",
+                entry
+                    .filename
+                    .as_ref()
+                    .map(|f| format!(" {f}"))
+                    .unwrap_or_default(),
+                entry.size
+            );
+            match (essence, &entry.text) {
+                ("application/vnd.agentwire.join", _) => {
+                    text.push_str(&format!("#{n} {from} joined."))
+                }
+                ("application/vnd.agentwire.leave", _) => {
+                    text.push_str(&format!("#{n} {from} left."))
+                }
+                (_, Some(body)) if essence.starts_with("text/") && entry.filename.is_none() => {
+                    text.push_str(&format!("{heading}:\n{body}"))
+                }
+                (_, _) if essence.starts_with("image/") && entry.size <= IMAGE_MAX => {
+                    match self.fetch(link, n).await {
+                        Ok(data) => {
+                            text.push_str(&format!("{heading}: {file}, shown next."));
+                            content.push(ContentBlock::text(std::mem::take(&mut text)));
+                            content.push(ContentBlock::image(BASE64.encode(data), essence));
+                        }
+                        Err(error) => {
+                            text.push_str(&format!("{heading}: {file}, not fetched: {error}"))
+                        }
+                    }
+                }
+                _ => text.push_str(&format!(
+                    "{heading}: {file}, fetched with curl -s -o <file> '{link}/{n}'"
+                )),
+            }
+            text.push_str("\n\n");
+        }
+        text.push_str(&describe_presence(presence, name));
+        content.push(ContentBlock::text(text));
+        content
+    }
+
+    async fn fetch(&self, link: &str, n: u64) -> Result<Vec<u8>, String> {
+        let response = self
+            .http
+            .get(format!("{link}/{n}"))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("relay answered {}", response.status().as_u16()));
+        }
+        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+        Ok(bytes.to_vec())
+    }
+}
+
+#[derive(Deserialize)]
+struct Joined {
+    name: String,
+    read: u64,
+    link: String,
 }
 
 impl ServerHandler for Room {
@@ -342,12 +508,25 @@ impl ServerHandler for Room {
         let options = TaskOptions::new().with_ttl_ms(ttl.as_millis() as u64);
         let task = self.tasks.spawn(options, move |task| {
             Box::pin(async move {
-                tokio::select! {
-                    _ = task.cancelled() => Err(TaskExit::Cancelled),
-                    result = tokio::time::timeout(TASK_WAIT, room.receive_for(&link)) => Ok(outcome(
-                        result.unwrap_or_else(|_| Ok("Nothing for you in a day. Call receive again to keep listening.".to_owned())),
+                let received = tokio::select! {
+                    _ = task.cancelled() => return Err(TaskExit::Cancelled),
+                    received = tokio::time::timeout(TASK_WAIT, room.receive_for(&link)) => received,
+                };
+                Ok(match received {
+                    Ok(Ok((content, handover))) => {
+                        // Handed over once the client fetches the result.
+                        room.handovers
+                            .lock()
+                            .unwrap()
+                            .insert(task.task_id().to_owned(), handover);
+                        CallToolResult::success(content)
+                    }
+                    Ok(Err(error)) => outcome(Err(error)),
+                    Err(_) => outcome(Ok(
+                        "Nothing for you in a day. Call receive again to keep listening."
+                            .to_owned(),
                     )),
-                }
+                })
             })
         });
         Ok(CallToolResponse::Task(CreateTaskResult::new(task)))
@@ -358,7 +537,14 @@ impl ServerHandler for Room {
         request: GetTaskParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
-        Ok(GetTaskResult::new(self.tasks.get_task(&request.task_id)?))
+        let task = self.tasks.get_task(&request.task_id)?;
+        if task.status().is_terminal() {
+            let handover = self.handovers.lock().unwrap().remove(&request.task_id);
+            if let Some(handover) = handover {
+                self.hand_over(handover).await;
+            }
+        }
+        Ok(GetTaskResult::new(task))
     }
 
     async fn update_task(
@@ -379,12 +565,18 @@ impl ServerHandler for Room {
     }
 }
 
-/// The service to mount at a path of an HTTP server, such as `/mcp`.
-pub fn service(room: Room) -> StreamableHttpService<Room, LocalSessionManager> {
+/// The service to mount at a path of an HTTP server, such as `/mcp`,
+/// accepting requests for the hosts given, such as `localhost` or a public domain.
+pub fn service(
+    room: Room,
+    hosts: impl IntoIterator<Item = impl Into<String>>,
+) -> StreamableHttpService<Room, LocalSessionManager> {
     StreamableHttpService::new(
         move || Ok(room.clone()),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default(),
+        StreamableHttpServerConfig::default()
+            .with_allowed_hosts(hosts)
+            .with_max_request_body_bytes(REQUEST_MAX),
     )
 }
 
@@ -407,44 +599,6 @@ fn recipients(entry: &Entry) -> Option<&str> {
             .eq_ignore_ascii_case("to")
             .then(|| value.trim().trim_matches('"'))
     })
-}
-
-fn describe(entries: &[Entry], name: &str, link: &str, presence: Option<&Value>) -> String {
-    let mut out = String::new();
-    for entry in entries {
-        let (n, from) = (entry.n, &entry.from);
-        let line = match entry.kind.as_str() {
-            "application/vnd.agentwire.join" => format!("#{n} {from} joined."),
-            "application/vnd.agentwire.leave" => format!("#{n} {from} left."),
-            kind => {
-                let to = recipients(entry).unwrap_or("*");
-                let marker = if addresses(entry, name) {
-                    "for you"
-                } else {
-                    "context"
-                };
-                let essence = kind.split(';').next().unwrap_or_default();
-                match (&entry.text, &entry.filename) {
-                    (Some(text), None) if essence.starts_with("text/") => {
-                        format!("#{n} from {from} to {to} ({marker}):\n{text}")
-                    }
-                    _ => format!(
-                        "#{n} from {from} to {to} ({marker}): {essence}{}, {} bytes, fetched with curl -s -o <file> '{link}/{n}'",
-                        entry
-                            .filename
-                            .as_ref()
-                            .map(|f| format!(" {f}"))
-                            .unwrap_or_default(),
-                        entry.size,
-                    ),
-                }
-            }
-        };
-        out.push_str(&line);
-        out.push_str("\n\n");
-    }
-    out.push_str(&describe_presence(presence, name));
-    out
 }
 
 fn describe_presence(presence: Option<&Value>, me: &str) -> String {

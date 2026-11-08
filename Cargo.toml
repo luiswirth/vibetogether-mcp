@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8"
+base64 = "0.23"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 rmcp = { version = "3.9", features = ["server", "macros", "transport-streamable-http-server"] }
 serde = { version = "1", features = ["derive"] }
@@ -12,5 +13,5 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
-agentwire-relay = { git = "https://github.com/luiswirth/agentwire" }
+agentwire-relay = { path = "../../agentwire" }
 rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }

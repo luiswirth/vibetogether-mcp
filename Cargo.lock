@@ -5,7 +5,6 @@ version = 4
 [[package]]
 name = "agentwire-relay"
 version = "0.1.0"
-source = "git+https://github.com/luiswirth/agentwire#84e58483431d3a6183a7170bb6e8c6072ec8fe18"
 dependencies = [
  "axum",
  "base64",
@@ -1883,6 +1882,7 @@ version = "0.1.0"
 dependencies = [
  "agentwire-relay",
  "axum",
+ "base64",
  "reqwest",
  "rmcp",
  "serde",
