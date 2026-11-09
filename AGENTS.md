@@ -35,6 +35,7 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
   `VIBETOGETHER_MCP_ACCOUNTS`, the account service's URL, turns signing in on, with `VIBETOGETHER_MCP_RESOURCE`, the server's public URL, for the challenge;
   the rooms are then the sessions on `AGENTWIRE_RELAY` that the service says last.
 - It speaks agentwire through the `agentwire` crate, agentwire's Rust participant library, pinned to a commit of `luiswirth/agentwire`.
+  `just bump <rev>` moves the pin, and the flake's `outputHashes` with it.
 - `just ci` runs every check.
   The tests in `tests/` run a relay in-process, from the `agentwire-relay` crate of the same commit.
 - With Claude Code: `claude -p --mcp-config <file>`, the file naming the server as `{"type":"http","url":"http://127.0.0.1:8792/mcp"}`.
