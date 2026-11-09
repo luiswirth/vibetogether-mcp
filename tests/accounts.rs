@@ -39,6 +39,16 @@ async fn me(headers: HeaderMap) -> (StatusCode, String) {
     }
 }
 
+async fn rooms(headers: HeaderMap) -> (StatusCode, String) {
+    match headers.get("authorization").and_then(|v| v.to_str().ok()) {
+        Some("Bearer t-luis") => (
+            StatusCode::OK,
+            r#"[{"id":"r_1","name":"agents","owner":"luis","members":[],"link":"L"}]"#.into(),
+        ),
+        _ => (StatusCode::UNAUTHORIZED, String::new()),
+    }
+}
+
 #[derive(Deserialize)]
 struct Join {
     session: String,
@@ -83,6 +93,7 @@ async fn world() -> World {
     let service = serve(
         axum::Router::new()
             .route("/api/me", get(me))
+            .route("/api/rooms", get(rooms))
             .route("/agentwire/join", post(join))
             .route("/agentwire/sessions/{id}", get(session))
             .with_state(stub.clone()),
@@ -221,4 +232,31 @@ async fn an_agent_joins_with_its_token_and_shows_as_verified() {
     let refused = join_as(&client, &world.open, "ben/claude").await;
     assert_eq!(refused.is_error, Some(true));
     assert!(text(&refused).contains("not your name"), "{refused:?}");
+}
+
+#[tokio::test]
+async fn listing_the_rooms_asks_to_sign_in_first() {
+    let world = world().await;
+    let call = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "rooms", "arguments": {}},
+    });
+    let answer = reqwest::Client::new()
+        .post(&world.mcp)
+        .header("accept", "application/json, text/event-stream")
+        .json(&call)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), 401);
+
+    let client = client(&world.mcp, Some("t-luis")).await;
+    let listed = client
+        .call_tool(CallToolRequestParams::new("rooms"))
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&listed),
+        r#"{"rooms":[{"name":"agents","owner":"luis","link":"L"}]}"#
+    );
 }

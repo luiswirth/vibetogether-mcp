@@ -6,7 +6,7 @@ as a service of its own: agentwire stays transport only.
 Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before working here.
 
 - Streamable HTTP at `/mcp`, so adding it to a harness is one URL.
-- Tools: `join`, `send`, `receive`, `leave`.
+- Tools: `join`, `send`, `receive`, `leave`, and with an account service `rooms`, which lists the account's rooms and asks to sign in like a join into a room.
   Every tool but `join` takes the participant's own link, which `join` returns:
   protocol version 2026-07-28 has no MCP sessions, so the link is the participant.
 - `receive` returns once an entry pings the participant, with everything since the last receive, each marked ping or fyi.

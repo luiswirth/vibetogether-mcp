@@ -1,7 +1,7 @@
 //! Signing in, lazily, with an account service such as Vibe Together's.
 //!
-//! Everything works without an account, as zero setup needs, except joining a room:
-//! a `join` into one without a token gets MCP's challenge, a 401 that points at the
+//! Everything works without an account, as zero setup needs, except joining a room and
+//! listing the account's rooms: such a call without a token gets MCP's challenge, a 401 that points at the
 //! server's metadata (RFC 9728), from which an MCP client gets a token through the
 //! service's OAuth and retries. The challenge has to be the HTTP answer itself, before
 //! the MCP SDK runs, since a tool's error, inside a 200, starts no sign-in.
@@ -43,6 +43,14 @@ pub struct Accounts {
 #[derive(Deserialize)]
 struct Lasting {
     lasting: bool,
+}
+
+/// A room, as the service lists it.
+#[derive(Deserialize)]
+struct Listed {
+    name: String,
+    owner: String,
+    link: String,
 }
 
 impl Accounts {
@@ -129,6 +137,29 @@ impl Accounts {
         }
     }
 
+    /// The rooms of the account whose token is `token`, as the agent reads them: JSON,
+    /// since a room's name is the owner's to choose.
+    pub(crate) async fn rooms(&self, token: &str) -> Result<String, String> {
+        let unreachable = |_| "the account service doesn't answer; try again later".to_owned();
+        let answer = self
+            .http
+            .get(format!("{}/api/rooms", self.service))
+            .bearer_auth(token)
+            .timeout(ANSWER)
+            .send()
+            .await
+            .map_err(unreachable)?;
+        if !answer.status().is_success() {
+            return Err(format!("the account service refused: {}", answer.status()));
+        }
+        let rooms: Vec<Listed> = answer.json().await.map_err(unreachable)?;
+        let rooms: Vec<Value> = rooms
+            .into_iter()
+            .map(|room| serde_json::json!({"name": room.name, "owner": room.owner, "link": room.link}))
+            .collect();
+        Ok(serde_json::json!({ "rooms": rooms }).to_string())
+    }
+
     fn challenge(&self, invalid: bool) -> Response {
         let (error, why) = if invalid {
             (
@@ -136,10 +167,7 @@ impl Accounts {
                 "sign in again: the account service doesn't know this token\n",
             )
         } else {
-            (
-                "",
-                "sign in: joining a room takes a Vibe Together account\n",
-            )
+            ("", "sign in: this takes a Vibe Together account\n")
         };
         let value = format!(r#"Bearer resource_metadata="{}"{error}"#, self.metadata);
         (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, value)], why).into_response()
@@ -167,8 +195,15 @@ pub async fn check(
     let Ok(bytes) = to_bytes(body, crate::REQUEST_MAX).await else {
         return (StatusCode::PAYLOAD_TOO_LARGE, "the request is too large\n").into_response();
     };
-    for session in joins(&bytes) {
-        if accounts.is_room(&session).await {
+    let calls = calls(&bytes);
+    if calls.iter().any(|(tool, _)| tool == "rooms") {
+        return accounts.challenge(false);
+    }
+    for (tool, session) in &calls {
+        if tool == "join"
+            && let Some(session) = session
+            && accounts.is_room(session).await
+        {
             return accounts.challenge(false);
         }
     }
@@ -176,8 +211,9 @@ pub async fn check(
         .await
 }
 
-/// The sessions that the `join` calls in a JSON-RPC message, or a batch of them, name.
-fn joins(body: &[u8]) -> Vec<String> {
+/// The tools a JSON-RPC message, or a batch of them, calls, each with the session it
+/// names, if any.
+fn calls(body: &[u8]) -> Vec<(String, Option<String>)> {
     let Ok(message) = serde_json::from_slice::<Value>(body) else {
         return Vec::new();
     };
@@ -187,9 +223,13 @@ fn joins(body: &[u8]) -> Vec<String> {
     };
     messages
         .iter()
-        .filter(|message| message["method"] == "tools/call" && message["params"]["name"] == "join")
-        .filter_map(|message| message["params"]["arguments"]["session"].as_str())
-        .map(str::to_owned)
+        .filter(|message| message["method"] == "tools/call")
+        .filter_map(|message| {
+            let params = &message["params"];
+            let tool = params["name"].as_str()?.to_owned();
+            let session = params["arguments"]["session"].as_str().map(str::to_owned);
+            Some((tool, session))
+        })
         .collect()
 }
 

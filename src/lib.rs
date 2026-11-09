@@ -75,6 +75,8 @@ pub struct Room {
     /// What a finished receive task hands over, by task: acknowledged once the client
     /// has fetched its result.
     handovers: Arc<Mutex<HashMap<String, Handover>>>,
+    /// The account service, where there is one: it lists an account's rooms.
+    accounts: Option<Arc<Accounts>>,
     tool_router: ToolRouter<Room>,
 }
 
@@ -145,6 +147,7 @@ impl Room {
             participants: Arc::default(),
             tasks: TaskManager::new(),
             handovers: Arc::default(),
+            accounts: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -178,6 +181,23 @@ impl Room {
     ) -> CallToolResult {
         let token = accounts::bearer(&parts.headers);
         self.receive_handing_over(&args.link, token).await
+    }
+
+    #[tool(
+        description = "List the rooms of your person's Vibe Together account, each with the link that join takes. The first call asks your person to sign in."
+    )]
+    async fn rooms(&self, Extension(parts): Extension<Parts>) -> CallToolResult {
+        let Some(accounts) = &self.accounts else {
+            return outcome(Err(
+                "this server has no account service: join a session by its link".to_owned(),
+            ));
+        };
+        let Some(token) = accounts::bearer(&parts.headers) else {
+            return outcome(Err(
+                "sign in first: your MCP client has no token for this server".to_owned(),
+            ));
+        };
+        outcome(accounts.rooms(token).await)
     }
 
     #[tool(description = "Leave the session.")]
@@ -443,7 +463,7 @@ impl Room {
             let mut item = serde_json::json!({
                 "n": n,
                 "from": entry.from,
-                "verified": verified(presence, &entry.from),
+                "verified": vouches(entry.account.as_deref(), &entry.from),
                 "pings_you": chat::pings(&entry.kind, name),
             });
             let file = || {
@@ -601,11 +621,13 @@ pub fn router(
     hosts: impl IntoIterator<Item = impl Into<String>>,
     accounts: Option<Accounts>,
 ) -> axum::Router {
-    let relay = room.relay.clone();
+    let mut room = room;
+    let accounts = accounts.map(|accounts| Arc::new(accounts.on(&room.relay)));
+    room.accounts = accounts.clone();
     let router = axum::Router::new().nest_service("/mcp", service(room, hosts));
     match accounts {
         Some(accounts) => router.layer(axum::middleware::from_fn_with_state(
-            Arc::new(accounts.on(&relay)),
+            accounts,
             accounts::check,
         )),
         None => router,
@@ -646,10 +668,16 @@ fn describe_presence(presence: Option<&BTreeMap<String, Presence>>, me: &str) ->
 /// Whether `name` is verified: in the room, with an account that vouches for it, as
 /// the account's own name or one of its agents'.
 fn verified(presence: Option<&BTreeMap<String, Presence>>, name: &str) -> bool {
-    presence
+    let account = presence
         .and_then(|people| people.get(name))
-        .and_then(|state| state.account.as_deref())
-        .is_some_and(|account| name.split('/').next() == Some(account))
+        .and_then(|state| state.account.as_deref());
+    vouches(account, name)
+}
+
+/// Whether `account` vouches for `name`: the account's own name, or one of its agents'.
+/// An entry's own account decides for the entry, since a name can change hands.
+fn vouches(account: Option<&str>, name: &str) -> bool {
+    account.is_some_and(|account| name.split('/').next() == Some(account))
 }
 
 /// Whether `text` is a token as the relay makes them, for sessions and participants:
