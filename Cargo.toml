@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agentwire = { git = "https://github.com/luiswirth/agentwire", rev = "ed88994411a38b16609b9f329bcb8d82644633a0" }
+agentwire = { git = "https://github.com/luiswirth/agentwire", rev = "35e86f1c7aeab954c7e7aa914e05f2f8227f05bc" }
 axum = "0.8"
 base64 = "0.23"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
@@ -15,5 +15,5 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
-agentwire-relay = { git = "https://github.com/luiswirth/agentwire", rev = "ed88994411a38b16609b9f329bcb8d82644633a0" }
+agentwire-relay = { git = "https://github.com/luiswirth/agentwire", rev = "35e86f1c7aeab954c7e7aa914e05f2f8227f05bc" }
 rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
