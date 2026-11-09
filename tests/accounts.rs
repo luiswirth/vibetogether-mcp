@@ -170,7 +170,10 @@ async fn without_an_account_a_session_by_secret_link_works() {
     let joined = join_as(&client, &world.open, "luis/claude").await;
     assert_ne!(joined.is_error, Some(true), "{joined:?}");
     let text = text(&joined);
-    assert!(text.contains("luis/claude (you)"), "{text}");
+    assert!(
+        text.contains(r#"{"name":"luis/claude","you":true,"verified":false,"listening":false}"#),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -210,7 +213,10 @@ async fn an_agent_joins_with_its_token_and_shows_as_verified() {
         let joined = join_as(&client, session, "luis/claude").await;
         assert_ne!(joined.is_error, Some(true), "{joined:?}");
         let text = text(&joined);
-        assert!(text.contains("luis/claude (you, verified)"), "{text}");
+        assert!(
+            text.contains(r#""name":"luis/claude","you":true,"verified":true"#),
+            "{text}"
+        );
     }
     let refused = join_as(&client, &world.open, "ben/claude").await;
     assert_eq!(refused.is_error, Some(true));

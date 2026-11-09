@@ -186,8 +186,14 @@ async fn receive_as_task_completes_only_for_a_message_pinging_the_agent() {
     };
     let result: CallToolResult = serde_json::from_value(result.into()).unwrap();
     let text = text(&result);
-    assert!(text.contains("from luis (fyi):\nNot for you."), "{text}");
-    assert!(text.contains("from luis (ping):\nFor you."), "{text}");
+    assert!(
+        text.contains(r#""from":"luis","verified":false,"pings_you":false,"text":"Not for you.""#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""from":"luis","verified":false,"pings_you":true,"text":"For you.""#),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -215,13 +221,27 @@ async fn receive_blocks_without_tasks_until_a_message_pings_the_agent() {
         .unwrap();
     assert_eq!(world.read_of("luis/claude").await, 5);
     let text = text(&result);
-    assert!(text.contains("from luis (fyi):\nNot for you."), "{text}");
-    assert!(text.contains("from luis (fyi):\nFor no one."), "{text}");
-    assert!(text.contains("from luis (ping):\nFor everyone."), "{text}");
+    assert!(
+        text.contains(r#""from":"luis","verified":false,"pings_you":false,"text":"Not for you.""#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""pings_you":false,"text":"For no one.""#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""pings_you":true,"text":"For everyone.""#),
+        "{text}"
+    );
 
     world.say(Some("tristan *"), "Again.").await;
     let text = self::text(&client.call_tool(receive(&link)).await.unwrap());
-    assert!(text.starts_with("#6 from luis (ping):\nAgain."), "{text}");
+    assert!(
+        text.starts_with(
+            r#"{"n":6,"from":"luis","verified":false,"pings_you":true,"text":"Again."}"#
+        ),
+        "{text}"
+    );
 }
 
 #[tokio::test]
