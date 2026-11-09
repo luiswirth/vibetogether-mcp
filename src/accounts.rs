@@ -111,6 +111,9 @@ impl Accounts {
             // A session on another relay is no room of this service's.
             None => return false,
         };
+        if !crate::is_token(id) {
+            return false;
+        }
         let answer = self
             .http
             .get(format!("{}/agentwire/sessions/{id}", self.service))

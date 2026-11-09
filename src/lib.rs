@@ -98,7 +98,7 @@ struct Handover {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct JoinArgs {
-    /// The session's token, or its full link for a relay other than the default.
+    /// The session's token, or its link.
     session: String,
     /// Your name, lower case with hyphens, as `<person>/<agent>` such as `luiswirth/claude`.
     name: String,
@@ -185,6 +185,39 @@ impl Room {
 }
 
 impl Room {
+    /// The link of `session`, given by its token or as its link, on this server's relay
+    /// only: no request, and no token, goes anywhere else.
+    fn session_link(&self, session: &str) -> Result<String, String> {
+        let session = session.trim().trim_end_matches('/');
+        let token = session
+            .strip_prefix(&format!("{}/v2/s/", self.relay))
+            .unwrap_or(session);
+        if !is_token(token) {
+            return Err(format!(
+                "give a session's token, or its link on {}: this server joins sessions there only",
+                self.relay
+            ));
+        }
+        Ok(format!("{}/v2/s/{token}", self.relay))
+    }
+
+    /// A participant's own link, as join returned it: on this server's relay, and of
+    /// that form only.
+    fn own_link(&self, link: &str) -> Result<String, String> {
+        let link = link.trim().trim_end_matches('/');
+        let own = link
+            .strip_prefix(&format!("{}/v2/s/", self.relay))
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(session, secret)| is_token(session) && is_token(secret));
+        if !own {
+            return Err(
+                "that is no link that join returned: give your own link, as join returned it"
+                    .to_owned(),
+            );
+        }
+        Ok(link.to_owned())
+    }
+
     /// Joins with the token the agent's MCP client presented, where it presented one.
     async fn join_session(
         &self,
@@ -192,11 +225,7 @@ impl Room {
         name: &str,
         token: Option<&str>,
     ) -> Result<String, String> {
-        let link = if session.contains("://") {
-            session.trim_end_matches('/').to_owned()
-        } else {
-            format!("{}/v2/s/{}", self.relay, session.trim())
-        };
+        let link = self.session_link(session)?;
         let joined = self.client.join(&link, name, token).await.map_err(fail)?;
         self.know(&joined);
         let now = Receive {
@@ -227,6 +256,7 @@ impl Room {
     }
 
     async fn say(&self, args: SendArgs) -> Result<String, String> {
+        let link = self.own_link(&args.link)?;
         let ping = match args.ping {
             None => None,
             Some(names) => {
@@ -256,15 +286,16 @@ impl Room {
         };
         let n = self
             .client
-            .send(&args.link, &kind, filename.as_deref(), body)
+            .send(&link, &kind, filename.as_deref(), body)
             .await
             .map_err(fail)?;
         Ok(format!("Sent as #{n}."))
     }
 
     async fn leave_session(&self, link: &str) -> Result<String, String> {
-        self.client.leave(link).await.map_err(fail)?;
-        self.participants.lock().unwrap().remove(link);
+        let link = self.own_link(link)?;
+        self.client.leave(&link).await.map_err(fail)?;
+        self.participants.lock().unwrap().remove(&link);
         Ok("Left the session.".to_owned())
     }
 
@@ -275,6 +306,7 @@ impl Room {
         link: &str,
         token: Option<&str>,
     ) -> Result<(Vec<ContentBlock>, Handover), String> {
+        let link = &self.own_link(link)?;
         let name = match self.participant(link, |p| p.name.clone()) {
             Some(name) => name,
             None => {
@@ -629,6 +661,15 @@ fn verified(name: &str, account: &str) -> String {
     } else {
         format!("account {account}")
     }
+}
+
+/// Whether `text` is a token as the relay makes them, for sessions and participants:
+/// nothing that could reach past them in a URL.
+pub(crate) fn is_token(text: &str) -> bool {
+    (1..=64).contains(&text.len())
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// What the agent reads of a failed request to the relay.

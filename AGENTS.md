@@ -17,6 +17,7 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
   for a task, when the client fetches its finished result; for a blocking receive, as it returns.
 - Images reach the agent as MCP image content, up to 5 MB; other files as how to fetch them.
   `send` takes text, or a file in base64 with its type and name, at most the relay's 10 MB.
+- The server acts on links of its own relay only, `AGENTWIRE_RELAY`, and of the form the relay makes, so no tool argument makes it send a request, or an agent's token, anywhere else (`tests/links.rs`).
 - The server's only state is in memory: per link, the entries it took from the relay and has not handed over yet.
 - Signing in is lazy, with an account service (`~/dev/vibetogether/accounts/api.md`, "The MCP server"), ag2's decision for luis's zero setup:
   everything works without an account but a `join` into a room, which gets MCP's 401 challenge, naming the server's metadata, which the account service serves;
