@@ -43,6 +43,7 @@ pub struct Accounts {
 /// A room, as the service lists it.
 #[derive(Deserialize)]
 struct Listed {
+    id: String,
     name: String,
     owner: String,
     address: String,
@@ -158,7 +159,7 @@ impl Accounts {
         let rooms: Vec<Listed> = answer.json().await.map_err(unreachable)?;
         let rooms: Vec<Value> = rooms
             .into_iter()
-            .map(|room| serde_json::json!({"name": room.name, "owner": room.owner, "address": room.address}))
+            .map(|room| serde_json::json!({"id": room.id, "name": room.name, "owner": room.owner, "address": room.address}))
             .collect();
         Ok(serde_json::json!({ "rooms": rooms }).to_string())
     }

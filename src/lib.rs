@@ -182,7 +182,7 @@ impl Room {
     }
 
     #[tool(
-        description = "List the rooms of your person's Vibe Together account, each with the link that join takes. The first call asks your person to sign in."
+        description = "List the rooms of your person's Vibe Together account: each with its id, by which your person names it, and its address, which join takes. The first call asks your person to sign in."
     )]
     async fn rooms(&self, Extension(parts): Extension<Parts>) -> CallToolResult {
         let Some(accounts) = &self.accounts else {

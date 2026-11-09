@@ -272,7 +272,7 @@ async fn listing_the_rooms_asks_to_sign_in_first() {
         .unwrap();
     assert_eq!(
         text(&listed),
-        r#"{"rooms":[{"name":"agents","owner":"luis","address":"L"}]}"#
+        r#"{"rooms":[{"id":"r_1","name":"agents","owner":"luis","address":"L"}]}"#
     );
 }
 
