@@ -625,13 +625,28 @@ pub fn router(
     let accounts = accounts.map(|accounts| Arc::new(accounts.on(&room.relay)));
     room.accounts = accounts.clone();
     let router = axum::Router::new().nest_service("/mcp", service(room, hosts));
-    match accounts {
+    let router = match accounts {
         Some(accounts) => router.layer(axum::middleware::from_fn_with_state(
             accounts,
             accounts::check,
         )),
         None => router,
-    }
+    };
+    router.layer(axum::middleware::from_fn(log))
+}
+
+/// Logs each request's method, path, status and how long its answer took to start,
+/// and nothing of its query, headers or body, which hold links and tokens.
+async fn log(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let started = std::time::Instant::now();
+    let (method, path) = (request.method().clone(), request.uri().path().to_owned());
+    let response = next.run(request).await;
+    let (status, took) = (response.status().as_u16(), started.elapsed().as_millis());
+    eprintln!("{method} {path} {status} {took}ms");
+    response
 }
 
 fn service(
