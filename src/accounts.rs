@@ -40,17 +40,12 @@ pub struct Accounts {
     vouched: Mutex<HashMap<String, Instant>>,
 }
 
-#[derive(Deserialize)]
-struct Lasting {
-    lasting: bool,
-}
-
 /// A room, as the service lists it.
 #[derive(Deserialize)]
 struct Listed {
     name: String,
     owner: String,
-    link: String,
+    address: String,
 }
 
 impl Accounts {
@@ -109,9 +104,12 @@ impl Accounts {
         }
     }
 
-    /// Whether `session`, a token or a link as `join` takes it, is a room;
-    /// no where the service doesn't say.
-    async fn is_room(&self, session: &str) -> bool {
+    /// Whether joining `room`, its address or the address's last part as `join` takes
+    /// it, as `name` without a token needs signing in: a room an account owns that the
+    /// service lets no one in without a token, such as one open to its members only.
+    /// No where the service doesn't say.
+    async fn needs_sign_in(&self, room: &str, name: &str) -> bool {
+        let session = room;
         let session = session.trim().trim_end_matches('/');
         let id = match session.strip_prefix(&format!("{}/v2/s/", self.relay)) {
             Some(id) => id,
@@ -128,13 +126,18 @@ impl Accounts {
             .timeout(ANSWER)
             .send()
             .await;
-        match answer {
-            Ok(answer) if answer.status().is_success() => answer
-                .json::<Lasting>()
-                .await
-                .is_ok_and(|lasting| lasting.lasting),
-            _ => false,
+        if !answer.is_ok_and(|answer| answer.status().is_success()) {
+            return false;
         }
+        let join = serde_json::json!({"session": id, "name": name, "token": null, "owned": true});
+        let answer = self
+            .http
+            .post(format!("{}/agentwire/join", self.service))
+            .json(&join)
+            .timeout(ANSWER)
+            .send()
+            .await;
+        answer.is_ok_and(|answer| answer.status() == StatusCode::FORBIDDEN)
     }
 
     /// The rooms of the account whose token is `token`, as the agent reads them: JSON,
@@ -155,7 +158,7 @@ impl Accounts {
         let rooms: Vec<Listed> = answer.json().await.map_err(unreachable)?;
         let rooms: Vec<Value> = rooms
             .into_iter()
-            .map(|room| serde_json::json!({"name": room.name, "owner": room.owner, "link": room.link}))
+            .map(|room| serde_json::json!({"name": room.name, "owner": room.owner, "address": room.address}))
             .collect();
         Ok(serde_json::json!({ "rooms": rooms }).to_string())
     }
@@ -196,13 +199,13 @@ pub async fn check(
         return (StatusCode::PAYLOAD_TOO_LARGE, "the request is too large\n").into_response();
     };
     let calls = calls(&bytes);
-    if calls.iter().any(|(tool, _)| tool == "rooms") {
+    if calls.iter().any(|(tool, _, _)| tool == "rooms") {
         return accounts.challenge(false);
     }
-    for (tool, session) in &calls {
+    for (tool, room, name) in &calls {
         if tool == "join"
-            && let Some(session) = session
-            && accounts.is_room(session).await
+            && let (Some(room), Some(name)) = (room, name)
+            && accounts.needs_sign_in(room, name).await
         {
             return accounts.challenge(false);
         }
@@ -211,9 +214,9 @@ pub async fn check(
         .await
 }
 
-/// The tools a JSON-RPC message, or a batch of them, calls, each with the session it
-/// names, if any.
-fn calls(body: &[u8]) -> Vec<(String, Option<String>)> {
+/// The tools a JSON-RPC message, or a batch of them, calls, each with the room and the
+/// name it gives, if any.
+fn calls(body: &[u8]) -> Vec<(String, Option<String>, Option<String>)> {
     let Ok(message) = serde_json::from_slice::<Value>(body) else {
         return Vec::new();
     };
@@ -227,8 +230,10 @@ fn calls(body: &[u8]) -> Vec<(String, Option<String>)> {
         .filter_map(|message| {
             let params = &message["params"];
             let tool = params["name"].as_str()?.to_owned();
-            let session = params["arguments"]["session"].as_str().map(str::to_owned);
-            Some((tool, session))
+            let arguments = &params["arguments"];
+            let room = arguments["room"].as_str().map(str::to_owned);
+            let name = arguments["name"].as_str().map(str::to_owned);
+            Some((tool, room, name))
         })
         .collect()
 }

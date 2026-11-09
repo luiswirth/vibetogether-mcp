@@ -30,6 +30,8 @@ const METADATA: &str = "https://vibetogether.example/.well-known/oauth-protected
 #[derive(Default)]
 struct Stub {
     rooms: Mutex<HashSet<String>>,
+    /// The rooms open to anyone with their address.
+    open: Mutex<HashSet<String>>,
 }
 
 async fn me(headers: HeaderMap) -> (StatusCode, String) {
@@ -43,7 +45,7 @@ async fn rooms(headers: HeaderMap) -> (StatusCode, String) {
     match headers.get("authorization").and_then(|v| v.to_str().ok()) {
         Some("Bearer t-luis") => (
             StatusCode::OK,
-            r#"[{"id":"r_1","name":"agents","owner":"luis","members":[],"link":"L"}]"#.into(),
+            r#"[{"id":"r_1","name":"agents","owner":"luis","members":[],"open":"members","address":"L"}]"#.into(),
         ),
         _ => (StatusCode::UNAUTHORIZED, String::new()),
     }
@@ -54,24 +56,31 @@ struct Join {
     session: String,
     name: String,
     token: Option<String>,
-    guarded: bool,
+    owned: bool,
 }
 
 async fn join(State(stub): State<Arc<Stub>>, Json(join): Json<Join>) -> (StatusCode, String) {
     let room = stub.rooms.lock().unwrap().contains(&join.session);
+    let open = stub.open.lock().unwrap().contains(&join.session);
     match join.token.as_deref() {
         Some("t-luis") if join.name.split('/').next() == Some("luis") => {
             (StatusCode::OK, r#"{"account":"luis"}"#.into())
         }
         Some(_) => (StatusCode::FORBIDDEN, "not your name\n".into()),
-        None if join.guarded || room => (StatusCode::FORBIDDEN, "sign in first\n".into()),
+        None if (join.owned && !open) || room => (StatusCode::FORBIDDEN, "sign in first\n".into()),
         None => (StatusCode::OK, r#"{"account":null}"#.into()),
     }
 }
 
-async fn session(State(stub): State<Arc<Stub>>, Path(id): Path<String>) -> Json<serde_json::Value> {
-    let lasting = stub.rooms.lock().unwrap().contains(&id);
-    Json(serde_json::json!({ "lasting": lasting }))
+async fn session(
+    State(stub): State<Arc<Stub>>,
+    Path(id): Path<String>,
+) -> (StatusCode, &'static str) {
+    let known = stub.rooms.lock().unwrap().contains(&id) || stub.open.lock().unwrap().contains(&id);
+    match known {
+        true => (StatusCode::OK, "{}"),
+        false => (StatusCode::NOT_FOUND, "no such room\n"),
+    }
 }
 
 async fn serve(router: axum::Router) -> String {
@@ -85,6 +94,8 @@ async fn serve(router: axum::Router) -> String {
 struct World {
     mcp: String,
     room: String,
+    /// A room an account owns that is open to anyone with its address.
+    shared: String,
     open: String,
 }
 
@@ -108,13 +119,17 @@ async fn world() -> World {
     let accounts = Accounts::new(&service, RESOURCE).unwrap();
     let mcp = serve(router(Room::new(&relay), ["127.0.0.1"], Some(accounts))).await;
     let client = Client::new();
-    let room = client.create_guarded(&relay).await.unwrap();
+    let room = client.create_owned(&relay).await.unwrap();
     let id = room.rsplit('/').next().unwrap().to_owned();
     stub.rooms.lock().unwrap().insert(id);
+    let shared = client.create_owned(&relay).await.unwrap();
+    let id = shared.rsplit('/').next().unwrap().to_owned();
+    stub.open.lock().unwrap().insert(id);
     let open = client.create(&relay).await.unwrap();
     World {
         mcp: format!("{mcp}/mcp"),
         room,
+        shared,
         open,
     }
 }
@@ -148,7 +163,7 @@ async fn join_as(
     client
         .call_tool(
             CallToolRequestParams::new("join")
-                .with_arguments(object!({ "session": session, "name": name })),
+                .with_arguments(object!({ "room": session, "name": name })),
         )
         .await
         .unwrap()
@@ -162,7 +177,7 @@ fn text(result: &CallToolResult) -> String {
 async fn post_join(mcp: &str, session: &str, token: Option<&str>) -> reqwest::Response {
     let call = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "join", "arguments": {"session": session, "name": "luis/claude"}},
+        "params": {"name": "join", "arguments": {"room": session, "name": "luis/claude"}},
     });
     let mut request = reqwest::Client::new()
         .post(mcp)
@@ -257,6 +272,18 @@ async fn listing_the_rooms_asks_to_sign_in_first() {
         .unwrap();
     assert_eq!(
         text(&listed),
-        r#"{"rooms":[{"name":"agents","owner":"luis","link":"L"}]}"#
+        r#"{"rooms":[{"name":"agents","owner":"luis","address":"L"}]}"#
     );
+}
+
+#[tokio::test]
+async fn a_room_open_by_its_address_needs_no_account() {
+    let world = world().await;
+    assert_ne!(
+        post_join(&world.mcp, &world.shared, None).await.status(),
+        401
+    );
+    let client = client(&world.mcp, None).await;
+    let joined = join_as(&client, &world.shared, "ben/claude").await;
+    assert_ne!(joined.is_error, Some(true), "{joined:?}");
 }

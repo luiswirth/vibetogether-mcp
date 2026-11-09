@@ -122,7 +122,7 @@ async fn join(client: &RunningService<RoleClient, ClientConfig>, session: &str) 
     let result = client
         .call_tool(
             CallToolRequestParams::new("join")
-                .with_arguments(object!({ "session": session, "name": "luis/claude" })),
+                .with_arguments(object!({ "room": session, "name": "luis/claude" })),
         )
         .await
         .unwrap();

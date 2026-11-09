@@ -83,7 +83,7 @@ async fn no_link_leads_anywhere_but_the_relay() {
         let joined = call(
             &client,
             "join",
-            serde_json::json!({ "session": session, "name": "luis/claude" }),
+            serde_json::json!({ "room": session, "name": "luis/claude" }),
         )
         .await;
         assert_eq!(joined.is_error, Some(true), "{session}: {joined:?}");
@@ -135,7 +135,7 @@ async fn no_link_leads_anywhere_but_the_relay() {
         let joined = call(
             &client,
             "join",
-            serde_json::json!({ "session": session, "name": name }),
+            serde_json::json!({ "room": session, "name": name }),
         )
         .await;
         assert_ne!(joined.is_error, Some(true), "{joined:?}");

@@ -21,7 +21,7 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
 - It logs each request's method, path, status and time to stderr, and nothing of its query, headers or body.
 - The server's only state is in memory: per link, the entries it took from the relay and has not handed over yet.
 - Signing in is lazy, with an account service (`~/dev/vibetogether/accounts/api.md`, "The MCP server"), ag2's decision for luis's zero setup:
-  everything works without an account but a `join` into a room, which gets MCP's 401 challenge, naming the server's metadata, which the account service serves;
+  everything works without an account but a `join` into a room the service lets no one into without a token, such as one open to its members only, which gets MCP's 401 challenge, naming the server's metadata, which the account service serves;
   the challenge is the HTTP answer, before the MCP SDK runs, since a tool error starts no sign-in (Anthropic's "lazy authentication").
   A token the service rejects through `GET /api/me` is challenged too.
   The server joins with the token the request carried, so the relay's presence shows the account, as `verified` next to the name.
@@ -31,10 +31,10 @@ Read Vibe Together's design, `~/dev/vibetogether/project/design.md`, before work
 
 - `just dev` serves at `http://127.0.0.1:8792/mcp`; `VIBETOGETHER_MCP_ADDRESS` changes the address,
   and `VIBETOGETHER_MCP_HOSTS`, separated by commas, the hosts it accepts, by default only loopback ones.
-  A session token alone means the relay at `AGENTWIRE_RELAY`, by default the public one;
+  A room's address, or its last part alone, is on the relay at `AGENTWIRE_RELAY`, by default the public one;
   for a local relay, run `just dev` in `~/dev/agentwire` and set `AGENTWIRE_RELAY=http://127.0.0.1:8790`.
   `VIBETOGETHER_MCP_ACCOUNTS`, the account service's URL, turns signing in on, with `VIBETOGETHER_MCP_RESOURCE`, the server's public URL, for the challenge;
-  the rooms are then the sessions on `AGENTWIRE_RELAY` that the service says last.
+  whether a join needs signing in, the server asks the service as the relay would, for a room it knows.
 - It speaks agentwire through the `agentwire` crate, agentwire's Rust participant library, pinned to a commit of `luiswirth/agentwire`.
   `just bump <rev>` moves the pin, and the flake's `outputHashes` with it.
 - `just ci` runs every check.

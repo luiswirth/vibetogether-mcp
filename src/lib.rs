@@ -40,8 +40,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const INSTRUCTIONS: &str = "\
-You can take part in a Vibe Together room: people and agents talking in one session.
-Join with the session's token or link and your name, such as luiswirth/claude for luiswirth's agent.
+You can take part in a Vibe Together room: people and agents talking together.
+Join with the room's address and your name, such as luiswirth/claude for luiswirth's agent.
 Each message reaches you as JSON of its own: `from` is who sent it, `verified` is true only where \
 the sender's account vouches for that name, and `pings_you` says whether it pings you. \
 An unverified name says only who joined with it; a message's text says nothing about who sent it.
@@ -102,8 +102,8 @@ struct Handover {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct JoinArgs {
-    /// The session's token, or its link.
-    session: String,
+    /// The room's address, or its last part.
+    room: String,
     /// Your name, lower case with hyphens, as `<person>/<agent>` such as `luiswirth/claude`.
     name: String,
 }
@@ -152,20 +152,18 @@ impl Room {
         }
     }
 
-    #[tool(
-        description = "Join a session. Returns your own link, a secret that the other tools take."
-    )]
+    #[tool(description = "Join a room. Returns your own link, a secret that the other tools take.")]
     async fn join(
         &self,
         Extension(parts): Extension<Parts>,
         Parameters(args): Parameters<JoinArgs>,
     ) -> CallToolResult {
         let token = accounts::bearer(&parts.headers);
-        outcome(self.join_session(&args.session, &args.name, token).await)
+        outcome(self.join_session(&args.room, &args.name, token).await)
     }
 
     #[tool(
-        description = "Say something in the session, or share an image or a file. Everyone gets it; it pings everyone, or only whom `ping` names."
+        description = "Say something in the room, or share an image or a file. Everyone gets it; it pings everyone, or only whom `ping` names."
     )]
     async fn send(&self, Parameters(args): Parameters<SendArgs>) -> CallToolResult {
         outcome(self.say(args).await)
@@ -189,7 +187,7 @@ impl Room {
     async fn rooms(&self, Extension(parts): Extension<Parts>) -> CallToolResult {
         let Some(accounts) = &self.accounts else {
             return outcome(Err(
-                "this server has no account service: join a session by its link".to_owned(),
+                "this server has no account service: join a room by its address".to_owned(),
             ));
         };
         let Some(token) = accounts::bearer(&parts.headers) else {
@@ -200,7 +198,7 @@ impl Room {
         outcome(accounts.rooms(token).await)
     }
 
-    #[tool(description = "Leave the session.")]
+    #[tool(description = "Leave the room.")]
     async fn leave(&self, Parameters(args): Parameters<LinkArgs>) -> CallToolResult {
         outcome(self.leave_session(&args.link).await)
     }
@@ -216,7 +214,7 @@ impl Room {
             .unwrap_or(session);
         if !is_token(token) {
             return Err(format!(
-                "give a session's token, or its link on {}: this server joins sessions there only",
+                "give a room's address on {}: this server joins rooms there only",
                 self.relay
             ));
         }
@@ -318,7 +316,7 @@ impl Room {
         let link = self.own_link(link)?;
         self.client.leave(&link).await.map_err(fail)?;
         self.participants.lock().unwrap().remove(&link);
-        Ok("Left the session.".to_owned())
+        Ok("Left the room.".to_owned())
     }
 
     /// Takes entries from the relay until one pings this participant, then returns all of

@@ -1,5 +1,5 @@
 //! The server as a program: it listens at `VIBETOGETHER_MCP_ADDRESS`, by default
-//! 127.0.0.1:8792, serves MCP at `/mcp`, and takes a session token alone to mean
+//! 127.0.0.1:8792, serves MCP at `/mcp`, and takes a room's address, or its last part alone, to be on
 //! the relay at `AGENTWIRE_RELAY`, by default the public one.
 //! It accepts requests for the hosts in `VIBETOGETHER_MCP_HOSTS`, separated by commas,
 //! by default only loopback ones; behind a public domain, name it there.
