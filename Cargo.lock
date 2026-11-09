@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "agentwire"
 version = "0.1.0"
-source = "git+https://github.com/luiswirth/agentwire?rev=0c197b607a3d88eea23c0e2b8388e8c417f9a1af#0c197b607a3d88eea23c0e2b8388e8c417f9a1af"
+source = "git+https://github.com/luiswirth/agentwire?rev=ed88994411a38b16609b9f329bcb8d82644633a0#ed88994411a38b16609b9f329bcb8d82644633a0"
 dependencies = [
  "reqwest",
  "serde",
@@ -15,7 +15,7 @@ dependencies = [
 [[package]]
 name = "agentwire-relay"
 version = "0.1.0"
-source = "git+https://github.com/luiswirth/agentwire?rev=0c197b607a3d88eea23c0e2b8388e8c417f9a1af#0c197b607a3d88eea23c0e2b8388e8c417f9a1af"
+source = "git+https://github.com/luiswirth/agentwire?rev=ed88994411a38b16609b9f329bcb8d82644633a0#ed88994411a38b16609b9f329bcb8d82644633a0"
 dependencies = [
  "agentwire",
  "axum",
